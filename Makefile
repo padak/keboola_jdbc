@@ -1,6 +1,6 @@
 .PHONY: build test test-e2e test-all clean dist jar manual-test help
 
-JAR_NAME := keboola-jdbc-driver-1.0.0.jar
+JAR_NAME := keboola-jdbc-driver-1.1.0.jar
 TARGET_JAR := target/$(JAR_NAME)
 DIST_JAR := dist/$(JAR_NAME)
 JAVA_HOME ?= $(shell mvn -q help:evaluate -Dexpression=java.home -DforceStdout 2>/dev/null)

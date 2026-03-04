@@ -20,7 +20,7 @@ User provides only an **API token and stack URL** — the driver auto-discovers 
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-1.0.0.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-1.1.0.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -74,7 +74,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-1.0.0.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-1.1.0.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -145,7 +145,7 @@ Unit tests cover: `TypeMapper`, `ConnectionConfig`, `ArrayResultSet`, `KeboolaDr
 ```bash
 export KEBOOLA_TOKEN="your-token"
 export KEBOOLA_HOST="connection.keboola.com"  # optional
-java -cp target/keboola-jdbc-driver-1.0.0.jar com.keboola.jdbc.ManualConnectionTest
+java -cp target/keboola-jdbc-driver-1.1.0.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 ## Project Structure

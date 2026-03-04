@@ -13,7 +13,7 @@ JDBC mapping: Catalog = Project, Schema = Bucket (`in.c-main`), Table = Table.
 ## Build & Test Commands
 
 ```bash
-mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-1.0.0.jar)
+mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-1.1.0.jar)
 mvn test                   # Run all unit tests (123 tests)
 mvn test -pl . -Dtest=TypeMapperTest          # Run single test class
 mvn test -pl . -Dtest=TypeMapperTest#testVarchar  # Run single test method
@@ -22,7 +22,7 @@ mvn verify -Pkeboola-integration              # Run integration tests (needs KEB
 
 Manual integration test:
 ```bash
-KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-1.0.0.jar com.keboola.jdbc.ManualConnectionTest
+KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-1.1.0.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 Java 11+. Surefire needs `-Dnet.bytebuddy.experimental=true` (already configured in pom.xml for Java 25 compat).

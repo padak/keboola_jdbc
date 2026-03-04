@@ -1,6 +1,7 @@
 docs/research.md
 docs/AGENT-REPORTS/
 .claude/
+.audit/
 target/
 dependency-reduced-pom.xml
 logs/

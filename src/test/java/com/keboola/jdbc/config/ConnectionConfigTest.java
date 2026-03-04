@@ -193,6 +193,64 @@ class ConnectionConfigTest {
     }
 
     // -------------------------------------------------------------------------
+    // fromUrl() - SSRF protection (hostname validation)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void fromUrl_ipAddress_throwsException() {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+
+        KeboolaJdbcException ex = assertThrows(
+                KeboolaJdbcException.class,
+                () -> ConnectionConfig.fromUrl("jdbc:keboola://169.254.169.254", props)
+        );
+        assertTrue(ex.getMessage().contains("Invalid host"), "Should reject IP addresses");
+    }
+
+    @Test
+    void fromUrl_localhost_throwsException() {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+
+        assertThrows(
+                KeboolaJdbcException.class,
+                () -> ConnectionConfig.fromUrl("jdbc:keboola://localhost", props)
+        );
+    }
+
+    @Test
+    void fromUrl_ipv6_throwsException() {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+
+        assertThrows(
+                KeboolaJdbcException.class,
+                () -> ConnectionConfig.fromUrl("jdbc:keboola://[::1]", props)
+        );
+    }
+
+    @Test
+    void fromUrl_hostWithPort_throwsException() {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+
+        assertThrows(
+                KeboolaJdbcException.class,
+                () -> ConnectionConfig.fromUrl("jdbc:keboola://evil.com:8080", props)
+        );
+    }
+
+    @Test
+    void fromUrl_validKeboolaHost_accepted() throws KeboolaJdbcException {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+
+        ConnectionConfig config = ConnectionConfig.fromUrl("jdbc:keboola://connection.north-europe.azure.keboola.com", props);
+        assertEquals("connection.north-europe.azure.keboola.com", config.getHost());
+    }
+
+    // -------------------------------------------------------------------------
     // toString()
     // -------------------------------------------------------------------------
 

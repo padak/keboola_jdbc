@@ -170,6 +170,14 @@ public class KeboolaPreparedStatement extends KeboolaStatement implements Prepar
         if (x == null) {
             params.put(parameterIndex, "NULL");
         } else {
+            // Reject dangerous characters that can bypass SQL escaping
+            if (x.indexOf('\0') >= 0) {
+                throw new SQLException("String parameter contains null byte (\\0) which is not allowed");
+            }
+            if (x.indexOf('\\') >= 0) {
+                throw new SQLException("String parameter contains backslash (\\) which is not allowed "
+                        + "in literal-interpolated queries. Use a plain Statement for backslash-containing values.");
+            }
             // Escape single quotes by doubling them (standard SQL escaping)
             params.put(parameterIndex, "'" + x.replace("'", "''") + "'");
         }

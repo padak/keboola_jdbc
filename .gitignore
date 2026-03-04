@@ -1,4 +1,9 @@
 docs/research.md
+docs/AGENT-REPORTS/
 .claude/
 target/
 dependency-reduced-pom.xml
+logs/
+*.log
+.env
+.env.*

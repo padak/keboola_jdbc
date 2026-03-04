@@ -256,6 +256,11 @@ public class StorageApiClient {
                 JsonNode urlNode = service.get("url");
                 if (idNode != null && "query".equals(idNode.asText()) && urlNode != null) {
                     String queryUrl = urlNode.asText();
+                    if (!queryUrl.startsWith("https://")) {
+                        throw KeboolaJdbcException.connectionFailed(
+                                "Query Service URL must use HTTPS, got: " + queryUrl
+                        );
+                    }
                     LOG.info("Discovered Query Service URL: {}", queryUrl);
                     return queryUrl;
                 }

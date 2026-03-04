@@ -287,11 +287,13 @@ public class QueryServiceClient {
                             "HTTP " + code + " from " + urlForLog
                     );
                 }
-                // Fail immediately on bad request
+                // Fail immediately on bad request (do not expose response body — may contain internal details)
                 if (code == 400) {
                     ResponseBody responseBody = response.body();
                     String detail = (responseBody != null) ? responseBody.string() : "(no body)";
-                    throw KeboolaJdbcException.queryFailed("(unknown)", "HTTP 400: " + detail);
+                    LOG.debug("HTTP 400 response body from {}: {}", urlForLog, detail);
+                    throw KeboolaJdbcException.queryFailed("(unknown)",
+                            "HTTP 400 from " + urlForLog + " (see DEBUG log for details)");
                 }
 
                 // Retry on 5xx and 429

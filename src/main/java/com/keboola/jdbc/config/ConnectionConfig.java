@@ -3,6 +3,7 @@ package com.keboola.jdbc.config;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 
 import java.util.Properties;
+import java.util.regex.Pattern;
 
 /**
  * Parsed connection parameters derived from a JDBC URL and connection properties.
@@ -16,6 +17,14 @@ import java.util.Properties;
  *   workspace (optional) - workspace ID to use for query execution
  */
 public class ConnectionConfig {
+
+    /**
+     * Matches a valid DNS hostname: labels of alphanumeric + hyphens, separated by dots.
+     * Rejects raw IP addresses, localhost, and special characters to prevent SSRF.
+     */
+    private static final Pattern VALID_HOSTNAME = Pattern.compile(
+            "^([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,}$"
+    );
 
     private final String host;
     private final String token;
@@ -48,6 +57,13 @@ public class ConnectionConfig {
         if (host.isEmpty()) {
             throw KeboolaJdbcException.connectionFailed(
                     "Host must not be empty in JDBC URL: " + url
+            );
+        }
+
+        if (!VALID_HOSTNAME.matcher(host).matches()) {
+            throw KeboolaJdbcException.connectionFailed(
+                    "Invalid host in JDBC URL: '" + host + "'. "
+                    + "Only valid DNS hostnames are accepted (IP addresses and localhost are rejected)"
             );
         }
 

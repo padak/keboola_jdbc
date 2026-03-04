@@ -67,7 +67,7 @@ public class KeboolaDriver implements Driver {
             // Per JDBC spec, return null if this driver does not handle the URL
             return null;
         }
-        LOG.debug("Connecting to URL: {}", url);
+        LOG.debug("Connecting to URL: {}", sanitizeUrlForLog(url));
         ConnectionConfig config;
         try {
             config = ConnectionConfig.fromUrl(url, info);
@@ -164,6 +164,20 @@ public class KeboolaDriver implements Driver {
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Removes any token or sensitive query parameters from the URL before logging.
+     */
+    private String sanitizeUrlForLog(String url) {
+        if (url == null) {
+            return "null";
+        }
+        int queryStart = url.indexOf('?');
+        if (queryStart >= 0) {
+            return url.substring(0, queryStart) + "?<redacted>";
+        }
+        return url;
+    }
 
     /**
      * Extracts the host part from a Keboola JDBC URL.

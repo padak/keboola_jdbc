@@ -38,20 +38,27 @@ public class SchemaCache {
 
     /**
      * Returns cached buckets, refreshing if expired.
+     * Uses synchronized to prevent multiple threads from refreshing concurrently.
      */
     public List<Bucket> getBuckets() {
         long now = System.currentTimeMillis();
         if (cachedBuckets == null || (now - bucketsTimestamp) > ttlMs) {
-            LOG.debug("Refreshing buckets cache");
-            try {
-                cachedBuckets = storageClient.listBuckets();
-                bucketsTimestamp = now;
-            } catch (Exception e) {
-                LOG.warn("Failed to refresh buckets cache: {}", e.getMessage());
-                if (cachedBuckets == null) {
-                    return Collections.emptyList();
+            synchronized (this) {
+                // Double-checked locking: re-check after acquiring the lock
+                now = System.currentTimeMillis();
+                if (cachedBuckets == null || (now - bucketsTimestamp) > ttlMs) {
+                    LOG.debug("Refreshing buckets cache");
+                    try {
+                        cachedBuckets = storageClient.listBuckets();
+                        bucketsTimestamp = now;
+                    } catch (Exception e) {
+                        LOG.warn("Failed to refresh buckets cache: {}", e.getMessage());
+                        if (cachedBuckets == null) {
+                            return Collections.emptyList();
+                        }
+                        // Return stale data on refresh failure
+                    }
                 }
-                // Return stale data on refresh failure
             }
         }
         return cachedBuckets;
@@ -59,23 +66,31 @@ public class SchemaCache {
 
     /**
      * Returns cached tables for a bucket, refreshing if expired.
+     * Uses compute-style locking per bucket to prevent concurrent refreshes.
      */
     public List<TableInfo> getTables(String bucketId) {
         long now = System.currentTimeMillis();
         CachedEntry<List<TableInfo>> entry = tablesCache.get(bucketId);
 
         if (entry == null || (now - entry.timestamp) > ttlMs) {
-            LOG.debug("Refreshing tables cache for bucket: {}", bucketId);
-            try {
-                List<TableInfo> tables = storageClient.listTables(bucketId);
-                tablesCache.put(bucketId, new CachedEntry<>(tables, now));
-                return tables;
-            } catch (Exception e) {
-                LOG.warn("Failed to refresh tables cache for bucket {}: {}", bucketId, e.getMessage());
-                if (entry == null) {
-                    return Collections.emptyList();
+            synchronized (tablesCache) {
+                // Double-checked locking: re-read after acquiring the lock
+                now = System.currentTimeMillis();
+                entry = tablesCache.get(bucketId);
+                if (entry == null || (now - entry.timestamp) > ttlMs) {
+                    LOG.debug("Refreshing tables cache for bucket: {}", bucketId);
+                    try {
+                        List<TableInfo> tables = storageClient.listTables(bucketId);
+                        tablesCache.put(bucketId, new CachedEntry<>(tables, now));
+                        return tables;
+                    } catch (Exception e) {
+                        LOG.warn("Failed to refresh tables cache for bucket {}: {}", bucketId, e.getMessage());
+                        if (entry == null) {
+                            return Collections.emptyList();
+                        }
+                        return entry.data;
+                    }
                 }
-                return entry.data;
             }
         }
         return entry.data;

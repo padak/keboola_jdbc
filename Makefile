@@ -3,6 +3,8 @@
 JAR_NAME := keboola-jdbc-driver-1.0.0.jar
 TARGET_JAR := target/$(JAR_NAME)
 DIST_JAR := dist/$(JAR_NAME)
+JAVA_HOME ?= $(shell mvn -q help:evaluate -Dexpression=java.home -DforceStdout 2>/dev/null)
+JAVA := $(JAVA_HOME)/bin/java
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -30,6 +32,6 @@ clean: ## Remove build artifacts
 	mvn clean -q
 	rm -f $(DIST_JAR)
 
-manual-test: build ## Run manual connection test (needs KEBOOLA_TOKEN env)
+manual-test: ## Run manual connection test (needs KEBOOLA_TOKEN env)
 	@test -n "$(KEBOOLA_TOKEN)" || (echo "Error: KEBOOLA_TOKEN is not set" && exit 1)
-	java -cp $(TARGET_JAR) com.keboola.jdbc.ManualConnectionTest
+	mvn -q test-compile exec:java -Dexec.mainClass=com.keboola.jdbc.ManualConnectionTest -Dexec.classpathScope=test

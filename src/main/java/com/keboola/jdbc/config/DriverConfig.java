@@ -1,0 +1,51 @@
+package com.keboola.jdbc.config;
+
+/**
+ * Static driver-wide constants and default configuration values.
+ * All tunables are defined here to avoid hardcoded values elsewhere in the codebase.
+ */
+public final class DriverConfig {
+
+    private DriverConfig() {
+        // Utility class - do not instantiate
+    }
+
+    // --- Driver identity ---
+
+    public static final String DRIVER_NAME    = "Keboola JDBC Driver";
+    public static final String DRIVER_VERSION = "1.0.0";
+    public static final int    MAJOR_VERSION  = 1;
+    public static final int    MINOR_VERSION  = 0;
+
+    // --- JDBC URL ---
+
+    /** Prefix that all Keboola JDBC URLs must start with. */
+    public static final String URL_PREFIX = "jdbc:keboola://";
+
+    // --- Result paging ---
+
+    /** Default number of rows requested per page when fetching query results. Minimum allowed by API is 100. */
+    public static final int DEFAULT_PAGE_SIZE = 1000;
+
+    // --- Polling / backoff ---
+
+    /** Initial delay before the first poll for job status, in milliseconds. */
+    public static final long   POLL_INITIAL_INTERVAL_MS = 100;
+
+    /** Maximum delay between consecutive polls, in milliseconds. */
+    public static final long   POLL_MAX_INTERVAL_MS     = 2_000;
+
+    /** Multiplicative factor applied to the poll interval after each unsuccessful poll. */
+    public static final double POLL_BACKOFF_FACTOR       = 1.5;
+
+    // --- Timeouts and retry ---
+
+    /** Maximum total time to wait for a query job to reach a terminal state, in seconds. */
+    public static final long MAX_WAIT_TIME_SECONDS = 300;
+
+    /** Per-request HTTP connection/read/write timeout, in seconds. */
+    public static final long HTTP_TIMEOUT_SECONDS  = 30;
+
+    /** Number of times to retry a failed HTTP request before propagating the error. */
+    public static final int  MAX_RETRIES           = 3;
+}

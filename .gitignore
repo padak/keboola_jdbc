@@ -1,0 +1,4 @@
+docs/research.md
+.claude/
+target/
+dependency-reduced-pom.xml

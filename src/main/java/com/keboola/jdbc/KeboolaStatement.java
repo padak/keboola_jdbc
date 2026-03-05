@@ -1,5 +1,6 @@
 package com.keboola.jdbc;
 
+import com.keboola.jdbc.command.KeboolaCommandDispatcher;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.model.JobStatus;
@@ -46,6 +47,12 @@ public class KeboolaStatement implements Statement {
 
     /** The current open result set, if the last execution returned rows. */
     protected KeboolaResultSet currentResultSet;
+
+    /** ResultSet from a custom command (KEBOOLA HELP, virtual tables). Mutually exclusive with currentResultSet. */
+    protected ResultSet currentCustomResultSet;
+
+    /** Dispatcher for custom Keboola commands (HELP, virtual tables). */
+    private final KeboolaCommandDispatcher commandDispatcher = new KeboolaCommandDispatcher();
 
     /**
      * The update count for the last DML statement (-1 if a ResultSet was returned,
@@ -104,6 +111,14 @@ public class KeboolaStatement implements Statement {
 
         // Intercept USE SCHEMA/DATABASE commands locally (also sent to server via session)
         interceptUseCommand(sql);
+
+        // Intercept custom Keboola commands (HELP, virtual tables) before sending to Query Service
+        ResultSet customResult = commandDispatcher.tryHandle(sql, connection);
+        if (customResult != null) {
+            currentResultSet = null;
+            currentCustomResultSet = customResult;
+            return true;
+        }
 
         // Split input into individual statements (supports semicolon-separated SQL)
         List<String> statements = new ArrayList<>(splitStatements(sql));
@@ -180,7 +195,7 @@ public class KeboolaStatement implements Statement {
         if (!hasResultSet) {
             throw new SQLException("SQL did not produce a ResultSet: " + sql);
         }
-        return currentResultSet;
+        return currentCustomResultSet != null ? currentCustomResultSet : currentResultSet;
     }
 
     @Override
@@ -236,6 +251,9 @@ public class KeboolaStatement implements Statement {
     @Override
     public ResultSet getResultSet() throws SQLException {
         checkClosed();
+        if (currentCustomResultSet != null) {
+            return currentCustomResultSet;
+        }
         return currentResultSet;
     }
 
@@ -573,6 +591,14 @@ public class KeboolaStatement implements Statement {
                 LOG.warn("Error closing result set", e);
             }
             currentResultSet = null;
+        }
+        if (currentCustomResultSet != null) {
+            try {
+                currentCustomResultSet.close();
+            } catch (SQLException e) {
+                LOG.warn("Error closing custom result set", e);
+            }
+            currentCustomResultSet = null;
         }
     }
 }

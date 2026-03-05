@@ -191,8 +191,8 @@ Connection conn = DriverManager.getConnection(url, props);
 │                    └─ DatabaseMetaData  │
 │                                         │
 │  Command Dispatcher:                    │
-│  ├─ HelpCommandHandler                 │
-│  └─ VirtualTableHandler → Registry     │
+│  ├─ HelpCommandHandler                  │
+│  └─ VirtualTableHandler → Registry      │
 │                                         │
 │  HTTP Clients:                          │
 │  ├─ StorageApiClient (metadata)         │

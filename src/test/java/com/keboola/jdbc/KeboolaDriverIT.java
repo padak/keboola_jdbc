@@ -294,6 +294,65 @@ class KeboolaDriverIT {
         }
     }
 
+    @Test
+    @Order(32)
+    void useSchema_thenSelectWithoutQualification() throws SQLException {
+        // Find a real bucket/table from metadata to test against
+        String schema = null;
+        String table = null;
+        try (ResultSet rs = connection.getMetaData().getTables(null, null, null, null)) {
+            if (rs.next()) {
+                schema = rs.getString("TABLE_SCHEM");
+                table = rs.getString("TABLE_NAME");
+            }
+        }
+        Assumptions.assumeTrue(schema != null && table != null,
+                "Need at least one table in the project to test USE SCHEMA");
+
+        try (Statement stmt = connection.createStatement()) {
+            // Set schema via USE SCHEMA
+            stmt.execute("USE SCHEMA \"" + schema + "\"");
+            assertEquals(schema, connection.getSchema());
+
+            // Query with unqualified table name - Snowflake should resolve it
+            try (ResultSet rs = stmt.executeQuery("SELECT * FROM \"" + table + "\" LIMIT 1")) {
+                assertNotNull(rs.getMetaData(), "ResultSet metadata should be available");
+            }
+        } finally {
+            connection.setSchema(null);
+        }
+    }
+
+    @Test
+    @Order(33)
+    void setSchema_thenSelectWithoutQualification() throws SQLException {
+        // Same test but using Connection.setSchema() API instead of SQL USE SCHEMA
+        String schema = null;
+        String table = null;
+        try (ResultSet rs = connection.getMetaData().getTables(null, null, null, null)) {
+            if (rs.next()) {
+                schema = rs.getString("TABLE_SCHEM");
+                table = rs.getString("TABLE_NAME");
+            }
+        }
+        Assumptions.assumeTrue(schema != null && table != null,
+                "Need at least one table in the project to test setSchema");
+
+        try {
+            // Set schema via JDBC API
+            connection.setSchema(schema);
+            assertEquals(schema, connection.getSchema());
+
+            // Query with unqualified table name
+            try (Statement stmt = connection.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT * FROM \"" + table + "\" LIMIT 1")) {
+                assertNotNull(rs.getMetaData(), "ResultSet metadata should be available");
+            }
+        } finally {
+            connection.setSchema(null);
+        }
+    }
+
     // =========================================================================
     // PreparedStatement tests
     // =========================================================================

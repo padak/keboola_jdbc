@@ -102,21 +102,36 @@ public class KeboolaStatement implements Statement {
 
         LOG.debug("Executing SQL: {}", sql);
 
-        // Intercept USE SCHEMA/DATABASE commands locally (not supported by Query Service API)
+        // Intercept USE SCHEMA/DATABASE commands locally - store schema for subsequent queries
         if (interceptUseCommand(sql)) {
             return false;
         }
 
-        // When a default schema is set, qualify unqualified table references
-        sql = qualifyWithCurrentSchema(sql);
-
         try {
-            QueryJob job = submitJob(sql);
-            StatementStatus status = waitForJobCompletion(job.getQueryJobId());
-            processStatementStatus(status);
+            // Build statement list: prepend USE SCHEMA if a default schema is set
+            List<String> statements = buildStatements(sql);
+
+            QueryJob job = submitJob(statements);
+
+            // When we prepend USE SCHEMA, the user's statement is the last one
+            JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
+            currentJobId = job.getQueryJobId();
+
+            List<StatementStatus> stmtStatuses = jobStatus.getStatements();
+            if (stmtStatuses == null || stmtStatuses.isEmpty()) {
+                throw new KeboolaJdbcException("Job " + job.getQueryJobId() + " returned no statement results");
+            }
+
+            // The user's query is always the last statement
+            StatementStatus userStatus = stmtStatuses.get(stmtStatuses.size() - 1);
+
+            // Check all statements for errors (including USE SCHEMA)
+            for (StatementStatus s : stmtStatuses) {
+                processStatementStatus(s);
+            }
 
             // Determine if this is a SELECT (has rows to fetch) or DML (only rows affected)
-            Integer numRows = status.getNumberOfRows();
+            Integer numRows = userStatus.getNumberOfRows();
             boolean isSelect = numRows != null && numRows > 0;
 
             if (!isSelect) {
@@ -130,11 +145,11 @@ public class KeboolaStatement implements Statement {
 
             if (isSelect) {
                 // SELECT statement - fetch first page and wrap in ResultSet
-                currentResultSet = fetchFirstPage(job.getQueryJobId(), status.getId());
+                currentResultSet = fetchFirstPage(job.getQueryJobId(), userStatus.getId());
                 return true;
             } else {
                 // DML statement - no ResultSet
-                Integer affected = status.getRowsAffected();
+                Integer affected = userStatus.getRowsAffected();
                 updateCount = affected != null ? affected : 0;
                 currentResultSet = null;
                 return false;
@@ -173,36 +188,35 @@ public class KeboolaStatement implements Statement {
     // -------------------------------------------------------------------------
 
     /**
-     * Submits the SQL to the Query Service and returns the job descriptor.
+     * Builds the list of SQL statements to submit. When a default schema is set
+     * on the connection, a USE SCHEMA command is prepended so that Snowflake
+     * resolves unqualified table references in the user's SQL.
      *
-     * @param sql the SQL statement to execute
-     * @return the query job with job ID and session ID
-     * @throws Exception if the submission fails
+     * @param userSql the user's SQL statement
+     * @return list of statements (1 or 2 elements)
      */
-    private QueryJob submitJob(String sql) throws Exception {
-        QueryJob job = queryClient.submitJob(branchId, workspaceId, sql);
-        currentJobId = job.getQueryJobId();
-        LOG.debug("Submitted job: jobId={}", currentJobId);
-        return job;
+    private List<String> buildStatements(String userSql) throws SQLException {
+        String schema = connection.getSchema();
+        if (schema != null && !schema.isEmpty()) {
+            String useSchema = "USE SCHEMA \"" + schema + "\"";
+            LOG.debug("Prepending schema command: {}", useSchema);
+            return Arrays.asList(useSchema, userSql);
+        }
+        return Collections.singletonList(userSql);
     }
 
     /**
-     * Polls until the job reaches a terminal state and returns the first statement's status.
+     * Submits the SQL statements to the Query Service and returns the job descriptor.
      *
-     * @param jobId the query job ID
-     * @return the terminal StatementStatus for the first statement in the job
-     * @throws Exception if polling fails, times out, or has no statements
+     * @param statements the SQL statements to execute (in order, same Snowflake session)
+     * @return the query job with job ID and session ID
+     * @throws Exception if the submission fails
      */
-    private StatementStatus waitForJobCompletion(String jobId) throws Exception {
-        LOG.debug("Waiting for job completion: jobId={}", jobId);
-        JobStatus jobStatus = queryClient.waitForCompletion(jobId);
-        LOG.debug("Job completed: jobId={}, status={}", jobId, jobStatus.getStatus());
-
-        java.util.List<StatementStatus> statements = jobStatus.getStatements();
-        if (statements == null || statements.isEmpty()) {
-            throw new KeboolaJdbcException("Job " + jobId + " returned no statement results");
-        }
-        return statements.get(0);
+    private QueryJob submitJob(List<String> statements) throws Exception {
+        QueryJob job = queryClient.submitJob(branchId, workspaceId, statements);
+        currentJobId = job.getQueryJobId();
+        LOG.debug("Submitted job: jobId={}, statements={}", currentJobId, statements.size());
+        return job;
     }
 
     /**
@@ -504,12 +518,12 @@ public class KeboolaStatement implements Statement {
     // -------------------------------------------------------------------------
 
     /**
-     * Intercepts USE SCHEMA/DATABASE commands and handles them locally by setting
-     * the current schema on the connection. The Keboola Query Service API does not
-     * support USE commands, so we emulate them client-side.
+     * Intercepts USE SCHEMA/DATABASE commands and stores the schema name on the
+     * connection. Subsequent queries will prepend a USE SCHEMA statement so that
+     * Snowflake resolves unqualified table names in the user's SQL.
      *
      * @param sql the SQL to check
-     * @return true if the command was intercepted and handled, false if it should be sent to the API
+     * @return true if the command was intercepted, false if it should be sent to the API
      */
     private boolean interceptUseCommand(String sql) throws SQLException {
         Matcher matcher = USE_PATTERN.matcher(sql);
@@ -522,78 +536,6 @@ public class KeboolaStatement implements Statement {
             return true;
         }
         return false;
-    }
-
-    /**
-     * When a current schema is set on the connection, qualifies unqualified table references
-     * in the SQL with the schema name. This is needed because the Query Service API is stateless
-     * and does not support USE SCHEMA.
-     *
-     * <p>Handles patterns like:
-     * <ul>
-     *   <li>{@code FROM "table"} → {@code FROM "schema"."table"}</li>
-     *   <li>{@code FROM table} → {@code FROM "schema"."table"}</li>
-     *   <li>{@code JOIN "table"} → {@code JOIN "schema"."table"}</li>
-     *   <li>{@code INTO "table"} → {@code INTO "schema"."table"}</li>
-     * </ul>
-     *
-     * Table references that already contain a dot (schema-qualified) are left unchanged.
-     *
-     * @param sql the original SQL
-     * @return the SQL with schema-qualified table names, or the original SQL if no schema is set
-     */
-    private String qualifyWithCurrentSchema(String sql) throws SQLException {
-        String schema = connection.getSchema();
-        if (schema == null || schema.isEmpty()) {
-            return sql;
-        }
-
-        // Pattern matches FROM/JOIN/INTO/UPDATE followed by a table reference
-        // Group 1: keyword (FROM, JOIN, INTO, UPDATE)
-        // Group 2: optional quote
-        // Group 3: table name (no dots = unqualified)
-        // Group 4: closing quote (if opened)
-        Pattern tableRefPattern = Pattern.compile(
-                "(\\bFROM|\\bJOIN|\\bINTO|\\bUPDATE)\\s+\"([^\"]+)\"|" +
-                "(\\bFROM|\\bJOIN|\\bINTO|\\bUPDATE)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-                Pattern.CASE_INSENSITIVE
-        );
-
-        StringBuffer result = new StringBuffer();
-        Matcher m = tableRefPattern.matcher(sql);
-        while (m.find()) {
-            if (m.group(1) != null) {
-                // Quoted table: FROM "tableName"
-                String keyword = m.group(1);
-                String tableName = m.group(2);
-                if (tableName.contains(".")) {
-                    // Already qualified (e.g. "in.c-main"."table" or "schema.table")
-                    m.appendReplacement(result, Matcher.quoteReplacement(m.group()));
-                } else {
-                    String qualified = keyword + " \"" + schema + "\".\"" + tableName + "\"";
-                    LOG.debug("Qualifying table reference: {} -> {}", m.group(), qualified);
-                    m.appendReplacement(result, Matcher.quoteReplacement(qualified));
-                }
-            } else {
-                // Unquoted table: FROM tableName
-                String keyword = m.group(3);
-                String tableName = m.group(4);
-                if (tableName.contains(".")) {
-                    m.appendReplacement(result, Matcher.quoteReplacement(m.group()));
-                } else {
-                    String qualified = keyword + " \"" + schema + "\".\"" + tableName + "\"";
-                    LOG.debug("Qualifying table reference: {} -> {}", m.group(), qualified);
-                    m.appendReplacement(result, Matcher.quoteReplacement(qualified));
-                }
-            }
-        }
-        m.appendTail(result);
-
-        String qualifiedSql = result.toString();
-        if (!qualifiedSql.equals(sql)) {
-            LOG.info("Schema-qualified SQL: {}", qualifiedSql);
-        }
-        return qualifiedSql;
     }
 
     private void checkClosed() throws SQLException {

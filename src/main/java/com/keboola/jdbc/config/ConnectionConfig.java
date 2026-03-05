@@ -15,6 +15,7 @@ import java.util.regex.Pattern;
  *   token     (required) - Keboola Storage API token
  *   branch    (optional) - branch ID to execute queries against
  *   workspace (optional) - workspace ID to use for query execution
+ *   schema    (optional) - default schema (bucket) to use for unqualified table references
  */
 public class ConnectionConfig {
 
@@ -30,12 +31,14 @@ public class ConnectionConfig {
     private final String token;
     private final Long   branchId;
     private final Long   workspaceId;
+    private final String schema;
 
-    private ConnectionConfig(String host, String token, Long branchId, Long workspaceId) {
+    private ConnectionConfig(String host, String token, Long branchId, Long workspaceId, String schema) {
         this.host        = host;
         this.token       = token;
         this.branchId    = branchId;
         this.workspaceId = workspaceId;
+        this.schema      = schema;
     }
 
     /**
@@ -78,8 +81,9 @@ public class ConnectionConfig {
 
         Long branchId    = parseOptionalLong(effectiveProps, "branch");
         Long workspaceId = parseOptionalLong(effectiveProps, "workspace");
+        String schema    = parseOptionalString(effectiveProps, "schema");
 
-        return new ConnectionConfig(host, token.trim(), branchId, workspaceId);
+        return new ConnectionConfig(host, token.trim(), branchId, workspaceId, schema);
     }
 
     /**
@@ -116,6 +120,17 @@ public class ConnectionConfig {
         }
     }
 
+    /**
+     * Reads an optional string property; returns null if absent or blank.
+     */
+    private static String parseOptionalString(Properties props, String key) {
+        String raw = props.getProperty(key);
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        return raw.trim();
+    }
+
     // --- Getters ---
 
     /** Returns the Keboola Connection host, e.g. "connection.keboola.com". */
@@ -144,8 +159,17 @@ public class ConnectionConfig {
         return workspaceId;
     }
 
+    /**
+     * Returns the default schema (bucket name) if explicitly configured, or null.
+     * When set, unqualified table references in SQL will be qualified with this schema.
+     */
+    public String getSchema() {
+        return schema;
+    }
+
     @Override
     public String toString() {
-        return "ConnectionConfig{host='" + host + "', branchId=" + branchId + ", workspaceId=" + workspaceId + "}";
+        return "ConnectionConfig{host='" + host + "', branchId=" + branchId
+                + ", workspaceId=" + workspaceId + ", schema=" + schema + "}";
     }
 }

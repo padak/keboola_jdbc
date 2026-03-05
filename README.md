@@ -20,7 +20,7 @@ User provides only an **API token and stack URL** — the driver auto-discovers 
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-1.1.0.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-1.2.0.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -31,6 +31,7 @@ Requires **Java 11+**.
 | `token` | Yes | Keboola Storage API token |
 | `branch` | No | Branch ID (auto-detects default branch) |
 | `workspace` | No | Workspace ID (auto-selects newest available) |
+| `schema` | No | Default schema/bucket (e.g. `in.c-main`) for unqualified table refs |
 
 ### JDBC URL Format
 
@@ -74,7 +75,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-1.1.0.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-1.2.0.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -85,15 +86,30 @@ The database navigator will show your buckets as schemas and tables with columns
 
 ## USE SCHEMA Support
 
-The Query Service API is stateless and does not support `USE SCHEMA` natively. The driver handles this client-side:
+The driver supports setting a default schema so you can use unqualified table names:
 
 ```sql
 USE SCHEMA "in.c-gymbeam";
 SELECT * FROM "items_catalog" LIMIT 10;
--- Driver rewrites to: SELECT * FROM "in.c-gymbeam"."items_catalog" LIMIT 10
+-- No need to write "in.c-gymbeam"."items_catalog" — Snowflake resolves it
 ```
 
-The driver intercepts `USE SCHEMA` / `USE DATABASE` commands, stores the active schema, and automatically qualifies unqualified table references in subsequent queries.
+**How it works:** When a schema is set (via `USE SCHEMA` SQL, `Connection.setSchema()` API, or the `schema` connection property), the driver prepends a `USE SCHEMA` statement to each query job. Both statements execute in the same Snowflake session, so the database itself resolves unqualified table names — no client-side SQL rewriting.
+
+You can also set the schema via the JDBC API:
+
+```java
+conn.setSchema("in.c-gymbeam");
+// All subsequent queries use this schema
+ResultSet rs = stmt.executeQuery("SELECT * FROM \"items_catalog\" LIMIT 10");
+```
+
+Or via connection properties:
+
+```java
+props.setProperty("schema", "in.c-gymbeam");
+Connection conn = DriverManager.getConnection(url, props);
+```
 
 ## Architecture
 
@@ -138,14 +154,14 @@ The driver intercepts `USE SCHEMA` / `USE DATABASE` commands, stores the active 
 mvn test
 ```
 
-Unit tests cover: `TypeMapper`, `ConnectionConfig`, `ArrayResultSet`, `KeboolaDriver`, `SchemaCache` (123 tests).
+Unit tests cover: `TypeMapper`, `ConnectionConfig`, `ArrayResultSet`, `KeboolaDriver`, `SchemaCache` (131 tests).
 
 ### Manual Integration Test
 
 ```bash
 export KEBOOLA_TOKEN="your-token"
 export KEBOOLA_HOST="connection.keboola.com"  # optional
-java -cp target/keboola-jdbc-driver-1.1.0.jar com.keboola.jdbc.ManualConnectionTest
+java -cp target/keboola-jdbc-driver-1.2.0.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 ## Project Structure
@@ -154,7 +170,7 @@ java -cp target/keboola-jdbc-driver-1.1.0.jar com.keboola.jdbc.ManualConnectionT
 src/main/java/com/keboola/jdbc/
 ├── KeboolaDriver.java            # SPI entry point, URL parsing
 ├── KeboolaConnection.java        # Connection lifecycle, service discovery
-├── KeboolaStatement.java         # SQL execution, USE SCHEMA interception
+├── KeboolaStatement.java         # SQL execution, multi-statement USE SCHEMA
 ├── KeboolaPreparedStatement.java # Parameterized queries
 ├── KeboolaResultSet.java         # Lazy-paging result set
 ├── KeboolaDatabaseMetaData.java  # Schema browser (catalogs/schemas/tables/columns)
@@ -172,3 +188,14 @@ src/main/java/com/keboola/jdbc/
 └── exception/
     └── KeboolaJdbcException.java # SQLSTATE error codes
 ```
+
+## Changelog
+
+### 1.2.0
+
+- **USE SCHEMA support via multi-statement jobs**: `USE SCHEMA` / `Connection.setSchema()` / `schema` connection property now work correctly. The driver prepends a `USE SCHEMA` statement to each query job so both execute in the same Snowflake session. Removed the previous regex-based SQL rewriting approach.
+- **New `schema` connection property**: Set default schema at connect time via `props.setProperty("schema", "in.c-main")`.
+
+### 1.1.0
+
+- Initial release with Storage API metadata, Query Service SQL execution, DBeaver/DataGrip support, type mapping, schema cache, and uber-jar packaging.

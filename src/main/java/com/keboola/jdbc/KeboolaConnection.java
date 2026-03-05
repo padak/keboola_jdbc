@@ -82,8 +82,13 @@ public class KeboolaConnection implements Connection {
             workspaceId = resolveWorkspaceId(config);
             catalog = tokenInfo.getOwner().getName();
 
-            LOG.info("Connected: project='{}', branchId={}, workspaceId={}",
-                    catalog, branchId, workspaceId);
+            // Apply default schema from connection config if provided
+            if (config.getSchema() != null) {
+                this.currentSchema = config.getSchema();
+            }
+
+            LOG.info("Connected: project='{}', branchId={}, workspaceId={}, schema={}",
+                    catalog, branchId, workspaceId, currentSchema);
 
         } catch (KeboolaJdbcException e) {
             throw new SQLException("Failed to connect to Keboola: " + e.getMessage(), e);

@@ -66,21 +66,24 @@ public class QueryServiceClient {
     // --- Public API methods ---
 
     /**
-     * Submits a SQL statement to the Query Service for asynchronous execution.
+     * Submits SQL statements to the Query Service for asynchronous execution.
+     * All statements execute in the same Snowflake session within a single job.
      * Endpoint: POST /api/v1/branches/{branchId}/workspaces/{workspaceId}/queries
      *
      * @param branchId    the branch to execute the query against
      * @param workspaceId the workspace to execute the query in
-     * @param sql         the SQL statement to execute
+     * @param statements  the SQL statements to execute (in order, same session)
      * @return job metadata including the queryJobId needed for polling
      * @throws KeboolaJdbcException on network error or non-retryable API error
      */
-    public QueryJob submitJob(long branchId, long workspaceId, String sql) throws KeboolaJdbcException {
+    public QueryJob submitJob(long branchId, long workspaceId, java.util.List<String> statements) throws KeboolaJdbcException {
         String url  = queryServiceUrl + "/api/v1/branches/" + branchId + "/workspaces/" + workspaceId + "/queries";
-        String body = buildSubmitJobBody(sql);
+        String body = buildSubmitJobBody(statements);
 
-        LOG.info("Submitting query job to {}", url);
-        LOG.debug("SQL: {}", sql);
+        LOG.info("Submitting query job to {} ({} statement(s))", url, statements.size());
+        for (int i = 0; i < statements.size(); i++) {
+            LOG.debug("Statement [{}]: {}", i, statements.get(i));
+        }
 
         String responseBody = executePost(url, body);
         return deserialize(responseBody, QueryJob.class);
@@ -223,13 +226,13 @@ public class QueryServiceClient {
 
     /**
      * Builds the JSON body for a query submission request.
-     * The SQL is wrapped in a "statements" array per the Query Service API contract.
+     * The statements list is sent directly per the Query Service API contract.
      */
-    private String buildSubmitJobBody(String sql) throws KeboolaJdbcException {
+    private String buildSubmitJobBody(java.util.List<String> statements) throws KeboolaJdbcException {
         try {
             return objectMapper.writeValueAsString(
                     new java.util.HashMap<String, Object>() {{
-                        put("statements", new String[]{sql});
+                        put("statements", statements);
                     }}
             );
         } catch (IOException e) {

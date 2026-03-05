@@ -5,7 +5,7 @@ import java.util.Properties;
 
 /**
  * Manual test runner for the Keboola JDBC driver.
- * Run with: java -cp target/keboola-jdbc-driver-1.1.0.jar com.keboola.jdbc.ManualConnectionTest
+ * Run with: java -cp target/keboola-jdbc-driver-1.2.0.jar com.keboola.jdbc.ManualConnectionTest
  *
  * Requires env vars: KEBOOLA_TOKEN, KEBOOLA_HOST (optional, defaults to connection.keboola.com)
  */

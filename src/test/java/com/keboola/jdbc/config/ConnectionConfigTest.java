@@ -96,6 +96,38 @@ class ConnectionConfigTest {
     }
 
     @Test
+    void fromUrl_withSchemaProperty_readsSchema() throws KeboolaJdbcException {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+        props.setProperty("schema", "in.c-main");
+
+        ConnectionConfig config = ConnectionConfig.fromUrl(VALID_URL, props);
+
+        assertEquals("in.c-main", config.getSchema());
+    }
+
+    @Test
+    void fromUrl_withoutSchema_returnsNull() throws KeboolaJdbcException {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+
+        ConnectionConfig config = ConnectionConfig.fromUrl(VALID_URL, props);
+
+        assertNull(config.getSchema());
+    }
+
+    @Test
+    void fromUrl_withBlankSchema_returnsNull() throws KeboolaJdbcException {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+        props.setProperty("schema", "  ");
+
+        ConnectionConfig config = ConnectionConfig.fromUrl(VALID_URL, props);
+
+        assertNull(config.getSchema());
+    }
+
+    @Test
     void fromUrl_urlWithTrailingPath_extractsHostCorrectly() throws KeboolaJdbcException {
         Properties props = new Properties();
         props.setProperty("token", VALID_TOKEN);

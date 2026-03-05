@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.http.model.TokenInfo;
+import com.keboola.jdbc.meta.TypeMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,8 +13,9 @@ import java.util.*;
 
 /**
  * DatabaseMetaData implementation for Keboola.
- * Proxies all database object listing to the underlying Snowflake database
- * via SHOW commands executed through the Query Service.
+ * Proxies database object listing to the underlying Snowflake database using SHOW commands
+ * with LIKE clauses, IN scoping, and client-side regex pattern filtering — matching the
+ * approach of Snowflake's own JDBC driver.
  */
 public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
@@ -107,32 +109,50 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     public ResultSet getSchemas(String catalog, String schemaPattern) throws SQLException {
         LOG.debug("getSchemas(catalog={}, schemaPattern={})", catalog, schemaPattern);
         List<String> columns = Arrays.asList("TABLE_SCHEM", "TABLE_CATALOG");
-        List<List<Object>> rows = new ArrayList<>();
+
+        // Empty string catalog means "no match"
+        if ("".equals(catalog)) {
+            return new ArrayResultSet(columns, Collections.emptyList());
+        }
 
         StringBuilder sql = new StringBuilder("SHOW SCHEMAS");
-        if (catalog != null && !catalog.equals("%")) {
-            sql.append(" IN DATABASE \"").append(catalog.replace("\"", "\"\"")).append("\"");
+        if (schemaPattern != null && !schemaPattern.isEmpty() && !schemaPattern.equals("%")) {
+            sql.append(" LIKE '").append(escapeSingleQuoteForLike(schemaPattern)).append("'");
         }
-        if (schemaPattern != null && !schemaPattern.equals("%")) {
-            sql.append(" LIKE '").append(escapeLike(schemaPattern)).append("'");
-        }
+        sql.append(buildCatalogInClause(catalog));
 
+        List<List<Object>> rows = new ArrayList<>();
         try (Statement stmt = connection.createStatement();
              ResultSet rs = stmt.executeQuery(sql.toString())) {
             int nameIdx = findColumnIndex(rs, "name");
             int dbIdx = findColumnIndex(rs, "database_name");
             while (rs.next()) {
-                rows.add(Arrays.asList(rs.getString(nameIdx), rs.getString(dbIdx)));
+                String schemaName = rs.getString(nameIdx);
+                String dbName = rs.getString(dbIdx);
+                if (matchesPattern(dbName, catalog)) {
+                    rows.add(Arrays.asList(schemaName, dbName));
+                }
             }
         }
 
-        rows.sort(Comparator.comparing(r -> (String) r.get(0)));
+        rows.sort(Comparator.<List<Object>, String>comparing(r -> (String) r.get(1))
+                .thenComparing(r -> (String) r.get(0)));
         return new ArrayResultSet(columns, rows);
     }
 
     @Override
     public ResultSet getTables(String catalog, String schemaPattern, String tableNamePattern, String[] types) throws SQLException {
         LOG.debug("getTables(catalog={}, schema={}, table={}, types={})", catalog, schemaPattern, tableNamePattern, types != null ? Arrays.toString(types) : "null");
+
+        List<String> columns = Arrays.asList(
+                "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
+                "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"
+        );
+
+        // Empty string catalog or schema means "no match"
+        if ("".equals(catalog) || "".equals(schemaPattern)) {
+            return new ArrayResultSet(columns, Collections.emptyList());
+        }
 
         Set<String> typeSet = null;
         if (types != null) {
@@ -146,79 +166,68 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         boolean wantViews = typeSet == null || typeSet.contains("VIEW");
 
         if (!wantTables && !wantViews) {
-            return emptyTableResultSet();
+            return new ArrayResultSet(columns, Collections.emptyList());
         }
 
-        List<String> columns = Arrays.asList(
-                "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
-                "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"
-        );
-        List<List<Object>> rows = new ArrayList<>();
-
-        if (wantTables) {
-            collectTables(rows, "SHOW TABLES", catalog, schemaPattern, tableNamePattern, "TABLE");
-        }
-        if (wantViews) {
-            collectTables(rows, "SHOW VIEWS", catalog, schemaPattern, tableNamePattern, "VIEW");
+        // Determine SHOW command based on requested types
+        String showCommand;
+        if (wantTables && wantViews) {
+            showCommand = "SHOW OBJECTS";
+        } else if (wantViews) {
+            showCommand = "SHOW VIEWS";
+        } else {
+            showCommand = "SHOW TABLES";
         }
 
-        rows.sort((a, b) -> {
-            int cmp = String.valueOf(a.get(3)).compareTo(String.valueOf(b.get(3))); // TABLE_TYPE
-            if (cmp != 0) return cmp;
-            cmp = String.valueOf(a.get(0)).compareTo(String.valueOf(b.get(0))); // TABLE_CAT
-            if (cmp != 0) return cmp;
-            cmp = String.valueOf(a.get(1)).compareTo(String.valueOf(b.get(1))); // TABLE_SCHEM
-            if (cmp != 0) return cmp;
-            return String.valueOf(a.get(2)).compareTo(String.valueOf(b.get(2))); // TABLE_NAME
-        });
-
-        return new ArrayResultSet(columns, rows);
-    }
-
-    private void collectTables(List<List<Object>> rows, String showCommand,
-                               String catalog, String schemaPattern, String tableNamePattern,
-                               String tableType) throws SQLException {
         StringBuilder sql = new StringBuilder(showCommand);
-
-        // Scope: IN SCHEMA > IN DATABASE > (unscoped)
-        if (schemaPattern != null && !schemaPattern.equals("%") && catalog != null && !catalog.equals("%")) {
-            sql.append(" IN SCHEMA \"").append(catalog.replace("\"", "\"\""))
-               .append("\".\"").append(schemaPattern.replace("\"", "\"\"")).append("\"");
-        } else if (catalog != null && !catalog.equals("%")) {
-            sql.append(" IN DATABASE \"").append(catalog.replace("\"", "\"\"")).append("\"");
-        } else if (schemaPattern != null && !schemaPattern.equals("%")) {
-            sql.append(" IN SCHEMA \"").append(schemaPattern.replace("\"", "\"\"")).append("\"");
+        if (tableNamePattern != null && !tableNamePattern.isEmpty() && !tableNamePattern.equals("%")) {
+            sql.append(" LIKE '").append(escapeSingleQuoteForLike(tableNamePattern)).append("'");
         }
+        sql.append(buildScopeInClause(catalog, schemaPattern));
 
-        if (tableNamePattern != null && !tableNamePattern.equals("%")) {
-            sql.append(" LIKE '").append(escapeLike(tableNamePattern)).append("'");
-        }
-
+        List<List<Object>> rows = new ArrayList<>();
         try (Statement stmt = connection.createStatement();
              ResultSet rs = stmt.executeQuery(sql.toString())) {
             int nameIdx = findColumnIndex(rs, "name");
             int schemaIdx = findColumnIndex(rs, "schema_name");
             int dbIdx = findColumnIndex(rs, "database_name");
+            int kindIdx = findColumnIndex(rs, "kind");
             while (rs.next()) {
                 String schemaName = rs.getString(schemaIdx);
-                // Client-side filter for schema pattern when LIKE was used for table name
-                if (schemaPattern != null && !schemaPattern.equals("%")
-                        && catalog != null && !catalog.equals("%")) {
-                    // Already scoped by IN SCHEMA
-                } else if (schemaPattern != null && !schemaPattern.equals("%")) {
-                    if (!matchesPattern(schemaName, schemaPattern)) continue;
+                String dbName = rs.getString(dbIdx);
+                String kind = rs.getString(kindIdx);
+
+                // Client-side filtering for schema pattern (LIKE only filters table name)
+                if (!matchesPattern(schemaName, schemaPattern)) continue;
+                if (!matchesPattern(dbName, catalog)) continue;
+
+                // Normalize type
+                String tableType = "TABLE";
+                if ("VIEW".equalsIgnoreCase(kind)) {
+                    tableType = "VIEW";
+                }
+
+                // Filter by type set when using SHOW OBJECTS
+                if (typeSet != null && !typeSet.contains(tableType) && !typeSet.contains("BASE TABLE")) {
+                    continue;
                 }
 
                 rows.add(Arrays.asList(
-                        rs.getString(dbIdx),    // TABLE_CAT
-                        schemaName,             // TABLE_SCHEM
-                        rs.getString(nameIdx),  // TABLE_NAME
-                        tableType,              // TABLE_TYPE
-                        "",                     // REMARKS
+                        dbName,                         // TABLE_CAT
+                        schemaName,                     // TABLE_SCHEM
+                        rs.getString(nameIdx),          // TABLE_NAME
+                        tableType,                      // TABLE_TYPE
+                        "",                             // REMARKS
                         null, null, null, null, null
                 ));
             }
         }
+
+        rows.sort(Comparator.<List<Object>, String>comparing(r -> (String) r.get(3))  // TABLE_TYPE
+                .thenComparing(r -> (String) r.get(0))   // TABLE_CAT
+                .thenComparing(r -> (String) r.get(1))   // TABLE_SCHEM
+                .thenComparing(r -> (String) r.get(2)));  // TABLE_NAME
+        return new ArrayResultSet(columns, rows);
     }
 
     @Override
@@ -233,91 +242,105 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                 "ORDINAL_POSITION", "IS_NULLABLE", "SCOPE_CATALOG", "SCOPE_SCHEMA",
                 "SCOPE_TABLE", "SOURCE_DATA_TYPE", "IS_AUTOINCREMENT", "IS_GENERATEDCOLUMN"
         );
-        List<List<Object>> rows = new ArrayList<>();
+
+        // Empty string catalog or schema means "no match"
+        if ("".equals(catalog) || "".equals(schemaPattern)) {
+            return new ArrayResultSet(columns, Collections.emptyList());
+        }
 
         StringBuilder sql = new StringBuilder("SHOW COLUMNS");
-
-        // Scope: IN TABLE > IN SCHEMA > IN DATABASE > (unscoped)
-        if (tableNamePattern != null && !tableNamePattern.equals("%")
-                && !tableNamePattern.contains("%") && !tableNamePattern.contains("_")) {
-            // Exact table name — scope to table for efficiency
-            if (schemaPattern != null && !schemaPattern.equals("%")
-                    && !schemaPattern.contains("%") && !schemaPattern.contains("_")) {
-                if (catalog != null && !catalog.equals("%")) {
-                    sql.append(" IN TABLE \"").append(catalog.replace("\"", "\"\""))
-                       .append("\".\"").append(schemaPattern.replace("\"", "\"\""))
-                       .append("\".\"").append(tableNamePattern.replace("\"", "\"\"")).append("\"");
-                } else {
-                    sql.append(" IN TABLE \"").append(schemaPattern.replace("\"", "\"\""))
-                       .append("\".\"").append(tableNamePattern.replace("\"", "\"\"")).append("\"");
-                }
-            } else if (catalog != null && !catalog.equals("%")) {
-                sql.append(" IN DATABASE \"").append(catalog.replace("\"", "\"\"")).append("\"");
-            }
-        } else if (schemaPattern != null && !schemaPattern.equals("%")
-                && !schemaPattern.contains("%") && !schemaPattern.contains("_")) {
-            if (catalog != null && !catalog.equals("%")) {
-                sql.append(" IN SCHEMA \"").append(catalog.replace("\"", "\"\""))
-                   .append("\".\"").append(schemaPattern.replace("\"", "\"\"")).append("\"");
-            } else {
-                sql.append(" IN SCHEMA \"").append(schemaPattern.replace("\"", "\"\"")).append("\"");
-            }
-        } else if (catalog != null && !catalog.equals("%")) {
-            sql.append(" IN DATABASE \"").append(catalog.replace("\"", "\"\"")).append("\"");
+        if (columnNamePattern != null && !columnNamePattern.isEmpty() && !columnNamePattern.equals("%")) {
+            sql.append(" LIKE '").append(escapeSingleQuoteForLike(columnNamePattern)).append("'");
         }
+        sql.append(buildColumnsInClause(catalog, schemaPattern, tableNamePattern));
 
-        if (columnNamePattern != null && !columnNamePattern.equals("%")) {
-            sql.append(" LIKE '").append(escapeLike(columnNamePattern)).append("'");
-        }
-
+        List<List<Object>> rows = new ArrayList<>();
         try (Statement stmt = connection.createStatement();
              ResultSet rs = stmt.executeQuery(sql.toString())) {
+            int dbIdx = findColumnIndex(rs, "database_name");
+            int schemaIdx = findColumnIndex(rs, "schema_name");
+            int tableIdx = findColumnIndex(rs, "table_name");
             int colNameIdx = findColumnIndex(rs, "column_name");
             int dataTypeIdx = findColumnIndex(rs, "data_type");
-            int tableNameIdx = findColumnIndex(rs, "table_name");
-            int schemaNameIdx = findColumnIndex(rs, "schema_name");
-            int dbNameIdx = findColumnIndex(rs, "database_name");
-            // Snowflake doesn't return a usable ordinal from SHOW COLUMNS; track per-table
-            Map<String, Integer> ordinalTracker = new LinkedHashMap<>();
+
+            // Track ordinal position per table
+            String lastTableKey = null;
+            int ordinal = 0;
 
             while (rs.next()) {
-                String tblName = rs.getString(tableNameIdx);
-                String schName = rs.getString(schemaNameIdx);
-                String dbName = rs.getString(dbNameIdx);
-
-                // Client-side filter for table/schema patterns not handled by scoping
-                if (tableNamePattern != null && !tableNamePattern.equals("%")) {
-                    if (!matchesPattern(tblName, tableNamePattern)) continue;
-                }
-                if (schemaPattern != null && !schemaPattern.equals("%")) {
-                    if (!matchesPattern(schName, schemaPattern)) continue;
-                }
-
+                String dbName = rs.getString(dbIdx);
+                String schemaName = rs.getString(schemaIdx);
+                String tableName = rs.getString(tableIdx);
+                String colName = rs.getString(colNameIdx);
                 String dataTypeJson = rs.getString(dataTypeIdx);
-                ColumnTypeInfo typeInfo = parseDataType(dataTypeJson);
 
-                String trackKey = dbName + "." + schName + "." + tblName;
-                int ordinal = ordinalTracker.merge(trackKey, 1, Integer::sum);
+                // Client-side filtering
+                if (!matchesPattern(schemaName, schemaPattern)) continue;
+                if (!matchesPattern(tableName, tableNamePattern)) continue;
+                if (!matchesPattern(dbName, catalog)) continue;
+
+                // Track ordinal per table
+                String tableKey = dbName + "." + schemaName + "." + tableName;
+                if (!tableKey.equals(lastTableKey)) {
+                    ordinal = 0;
+                    lastTableKey = tableKey;
+                }
+                ordinal++;
+
+                // Parse JSON data_type field
+                String sfType = "VARCHAR";
+                int precision = 0;
+                int scale = 0;
+                int length = 0;
+                boolean nullable = true;
+
+                try {
+                    JsonNode node = OBJECT_MAPPER.readTree(dataTypeJson);
+                    sfType = node.has("type") ? node.get("type").asText("VARCHAR") : "VARCHAR";
+                    precision = node.has("precision") ? node.get("precision").asInt(0) : 0;
+                    scale = node.has("scale") ? node.get("scale").asInt(0) : 0;
+                    length = node.has("length") ? node.get("length").asInt(0) : 0;
+                    nullable = !node.has("nullable") || node.get("nullable").asBoolean(true);
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse data_type JSON for column {}.{}.{}.{}: {}",
+                            dbName, schemaName, tableName, colName, e.getMessage());
+                }
+
+                int jdbcType = TypeMapper.toJdbcType(sfType);
+                String typeName = TypeMapper.toJdbcTypeName(sfType);
+
+                int columnSize;
+                int decimalDigits;
+                if (precision > 0) {
+                    columnSize = precision;
+                    decimalDigits = scale;
+                } else if (length > 0) {
+                    columnSize = length;
+                    decimalDigits = 0;
+                } else {
+                    columnSize = TypeMapper.getDisplaySize(sfType, null);
+                    decimalDigits = TypeMapper.getScale(sfType);
+                }
 
                 rows.add(Arrays.asList(
                         dbName,                                         // TABLE_CAT
-                        schName,                                        // TABLE_SCHEM
-                        tblName,                                        // TABLE_NAME
-                        rs.getString(colNameIdx),                       // COLUMN_NAME
-                        typeInfo.jdbcType,                              // DATA_TYPE
-                        typeInfo.typeName,                              // TYPE_NAME
-                        typeInfo.precision,                             // COLUMN_SIZE
+                        schemaName,                                     // TABLE_SCHEM
+                        tableName,                                      // TABLE_NAME
+                        colName,                                        // COLUMN_NAME
+                        jdbcType,                                       // DATA_TYPE
+                        typeName,                                       // TYPE_NAME
+                        columnSize,                                     // COLUMN_SIZE
                         null,                                           // BUFFER_LENGTH
-                        typeInfo.scale,                                 // DECIMAL_DIGITS
+                        decimalDigits,                                  // DECIMAL_DIGITS
                         10,                                             // NUM_PREC_RADIX
-                        typeInfo.nullable ? columnNullable : columnNoNulls, // NULLABLE
+                        nullable ? columnNullable : columnNoNulls,      // NULLABLE
                         "",                                             // REMARKS
                         null,                                           // COLUMN_DEF
                         0,                                              // SQL_DATA_TYPE
                         0,                                              // SQL_DATETIME_SUB
-                        typeInfo.precision,                             // CHAR_OCTET_LENGTH
+                        columnSize,                                     // CHAR_OCTET_LENGTH
                         ordinal,                                        // ORDINAL_POSITION
-                        typeInfo.nullable ? "YES" : "NO",               // IS_NULLABLE
+                        nullable ? "YES" : "NO",                        // IS_NULLABLE
                         null, null, null, null,                         // SCOPE_*
                         "NO",                                           // IS_AUTOINCREMENT
                         "NO"                                            // IS_GENERATEDCOLUMN
@@ -1003,39 +1026,54 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
     // -- Helpers --
 
-    /**
-     * SQL LIKE pattern matching: % = any, _ = single char, null = match all.
-     */
-    private boolean matchesPattern(String value, String pattern) {
-        if (pattern == null || pattern.equals("%")) {
-            return true;
-        }
-        String regex = pattern
-                .replace("\\", "\\\\")
+    private String escapeSingleQuoteForLike(String pattern) {
+        return pattern.replace("'", "''");
+    }
+
+    private boolean matchesPattern(String value, String sqlPattern) {
+        if (sqlPattern == null || sqlPattern.equals("%")) return true;
+        if (value == null) return false;
+        if (sqlPattern.isEmpty()) return value.isEmpty();
+        String regex = sqlPattern
                 .replace(".", "\\.")
-                .replace("(", "\\(")
-                .replace(")", "\\)")
-                .replace("[", "\\[")
-                .replace("]", "\\]")
-                .replace("{", "\\{")
-                .replace("}", "\\}")
-                .replace("^", "\\^")
-                .replace("$", "\\$")
-                .replace("|", "\\|")
-                .replace("+", "\\+")
-                .replace("*", "\\*")
-                .replace("?", "\\?")
-                .replace("%", ".*")
-                .replace("_", ".");
+                .replace("_", ".")
+                .replace("%", ".*");
         return value.matches("(?i)" + regex);
     }
 
-    /**
-     * Escapes a SQL LIKE pattern value for embedding in a SHOW ... LIKE 'pattern' clause.
-     * Converts JDBC % and _ wildcards to Snowflake LIKE syntax (which also uses % and _).
-     */
-    private String escapeLike(String pattern) {
-        return pattern.replace("'", "''");
+    private String buildCatalogInClause(String catalog) {
+        if (catalog != null && !catalog.equals("%")) {
+            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+        }
+        return "";
+    }
+
+    private String buildScopeInClause(String catalog, String schema) {
+        boolean hasCatalog = catalog != null && !catalog.isEmpty() && !catalog.equals("%");
+        boolean hasSchema = schema != null && !schema.isEmpty() && !schema.equals("%");
+
+        if (hasCatalog && hasSchema) {
+            return " IN SCHEMA \"" + catalog.replace("\"", "\"\"") + "\".\"" + schema.replace("\"", "\"\"") + "\"";
+        } else if (hasCatalog) {
+            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+        }
+        return "";
+    }
+
+    private String buildColumnsInClause(String catalog, String schema, String table) {
+        boolean hasCatalog = catalog != null && !catalog.isEmpty() && !catalog.equals("%");
+        boolean hasSchema = schema != null && !schema.isEmpty() && !schema.equals("%");
+        boolean hasTable = table != null && !table.isEmpty() && !table.equals("%");
+
+        if (hasCatalog && hasSchema && hasTable) {
+            return " IN TABLE \"" + catalog.replace("\"", "\"\"") + "\".\"" +
+                    schema.replace("\"", "\"\"") + "\".\"" + table.replace("\"", "\"\"") + "\"";
+        } else if (hasCatalog && hasSchema) {
+            return " IN SCHEMA \"" + catalog.replace("\"", "\"\"") + "\".\"" + schema.replace("\"", "\"\"") + "\"";
+        } else if (hasCatalog) {
+            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+        }
+        return "";
     }
 
     /**
@@ -1048,126 +1086,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                 return i;
             }
         }
-        throw new SQLException("Column '" + columnName + "' not found in SHOW result");
-    }
-
-    /**
-     * Parses the JSON data_type field from SHOW COLUMNS output.
-     * Example: {"type":"NUMBER","precision":38,"scale":0,"nullable":true}
-     */
-    private ColumnTypeInfo parseDataType(String dataTypeJson) {
-        ColumnTypeInfo info = new ColumnTypeInfo();
-        if (dataTypeJson == null || dataTypeJson.isEmpty()) {
-            info.typeName = "VARCHAR";
-            info.jdbcType = Types.VARCHAR;
-            info.precision = 16777216;
-            info.scale = 0;
-            info.nullable = true;
-            return info;
-        }
-
-        try {
-            JsonNode node = OBJECT_MAPPER.readTree(dataTypeJson);
-            info.typeName = node.has("type") ? node.get("type").asText("VARCHAR") : "VARCHAR";
-            info.nullable = !node.has("nullable") || node.get("nullable").asBoolean(true);
-
-            switch (info.typeName.toUpperCase()) {
-                case "NUMBER":
-                case "DECIMAL":
-                case "NUMERIC":
-                    info.jdbcType = Types.DECIMAL;
-                    info.precision = node.has("precision") ? node.get("precision").asInt(38) : 38;
-                    info.scale = node.has("scale") ? node.get("scale").asInt(0) : 0;
-                    break;
-                case "INT":
-                case "INTEGER":
-                    info.jdbcType = Types.INTEGER;
-                    info.precision = 10;
-                    info.scale = 0;
-                    break;
-                case "BIGINT":
-                    info.jdbcType = Types.BIGINT;
-                    info.precision = 19;
-                    info.scale = 0;
-                    break;
-                case "FLOAT":
-                case "FLOAT4":
-                    info.jdbcType = Types.FLOAT;
-                    info.precision = node.has("precision") ? node.get("precision").asInt(24) : 24;
-                    info.scale = 0;
-                    break;
-                case "DOUBLE":
-                case "DOUBLE PRECISION":
-                case "FLOAT8":
-                    info.jdbcType = Types.DOUBLE;
-                    info.precision = node.has("precision") ? node.get("precision").asInt(53) : 53;
-                    info.scale = 0;
-                    break;
-                case "BOOLEAN":
-                    info.jdbcType = Types.BOOLEAN;
-                    info.precision = 1;
-                    info.scale = 0;
-                    break;
-                case "DATE":
-                    info.jdbcType = Types.DATE;
-                    info.precision = 10;
-                    info.scale = 0;
-                    break;
-                case "TIME":
-                    info.jdbcType = Types.TIME;
-                    info.precision = node.has("precision") ? node.get("precision").asInt(9) : 9;
-                    info.scale = 0;
-                    break;
-                case "TIMESTAMP_NTZ":
-                case "TIMESTAMP":
-                    info.jdbcType = Types.TIMESTAMP;
-                    info.precision = node.has("precision") ? node.get("precision").asInt(9) : 9;
-                    info.scale = 0;
-                    break;
-                case "TIMESTAMP_TZ":
-                case "TIMESTAMP_LTZ":
-                    info.jdbcType = Types.TIMESTAMP_WITH_TIMEZONE;
-                    info.precision = node.has("precision") ? node.get("precision").asInt(9) : 9;
-                    info.scale = 0;
-                    break;
-                case "BINARY":
-                case "VARBINARY":
-                    info.jdbcType = Types.BINARY;
-                    info.precision = node.has("length") ? node.get("length").asInt(8388608) : 8388608;
-                    info.scale = 0;
-                    break;
-                case "VARIANT":
-                case "OBJECT":
-                case "ARRAY":
-                    info.jdbcType = Types.VARCHAR;
-                    info.precision = 16777216;
-                    info.scale = 0;
-                    break;
-                default:
-                    // VARCHAR, CHAR, TEXT, STRING, etc.
-                    info.jdbcType = Types.VARCHAR;
-                    info.precision = node.has("length") ? node.get("length").asInt(16777216) : 16777216;
-                    if (info.precision <= 0) info.precision = 16777216;
-                    info.scale = 0;
-                    break;
-            }
-        } catch (Exception e) {
-            LOG.warn("Failed to parse data_type JSON: {}", dataTypeJson, e);
-            info.typeName = "VARCHAR";
-            info.jdbcType = Types.VARCHAR;
-            info.precision = 16777216;
-            info.scale = 0;
-            info.nullable = true;
-        }
-        return info;
-    }
-
-    private static class ColumnTypeInfo {
-        String typeName;
-        int jdbcType;
-        int precision;
-        int scale;
-        boolean nullable;
+        throw new SQLException("Column '" + columnName + "' not found in result");
     }
 
     @Override
@@ -1188,14 +1107,6 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     @Override
     public boolean supportsOpenCursorsAcrossCommit() throws SQLException {
         return false;
-    }
-
-    private ResultSet emptyTableResultSet() throws SQLException {
-        return new ArrayResultSet(
-                Arrays.asList("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
-                        "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"),
-                Collections.emptyList()
-        );
     }
 
     private ResultSet emptyKeysResultSet() throws SQLException {

@@ -63,7 +63,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
     // Execute SQL
     try (Statement stmt = conn.createStatement();
          ResultSet rs = stmt.executeQuery(
-             "SELECT * FROM \"in.c-gymbeam\".\"items_catalog\" LIMIT 10")) {
+             "SELECT * FROM \"in.c-main\".\"items_catalog\" LIMIT 10")) {
         while (rs.next()) {
             System.out.println(rs.getString(1));
         }
@@ -89,9 +89,9 @@ The database navigator will show your buckets as schemas and tables with columns
 The driver supports setting a default schema so you can use unqualified table names:
 
 ```sql
-USE SCHEMA "in.c-gymbeam";
+USE SCHEMA "in.c-main";
 SELECT * FROM "items_catalog" LIMIT 10;
--- No need to write "in.c-gymbeam"."items_catalog" — Snowflake resolves it
+-- No need to write "in.c-main"."items_catalog" — Snowflake resolves it
 ```
 
 **How it works:** When a schema is set (via `USE SCHEMA` SQL, `Connection.setSchema()` API, or the `schema` connection property), the driver prepends a `USE SCHEMA` statement to each query job. Both statements execute in the same Snowflake session, so the database itself resolves unqualified table names — no client-side SQL rewriting.
@@ -99,7 +99,7 @@ SELECT * FROM "items_catalog" LIMIT 10;
 You can also set the schema via the JDBC API:
 
 ```java
-conn.setSchema("in.c-gymbeam");
+conn.setSchema("in.c-main");
 // All subsequent queries use this schema
 ResultSet rs = stmt.executeQuery("SELECT * FROM \"items_catalog\" LIMIT 10");
 ```
@@ -107,7 +107,7 @@ ResultSet rs = stmt.executeQuery("SELECT * FROM \"items_catalog\" LIMIT 10");
 Or via connection properties:
 
 ```java
-props.setProperty("schema", "in.c-gymbeam");
+props.setProperty("schema", "in.c-main");
 Connection conn = DriverManager.getConnection(url, props);
 ```
 

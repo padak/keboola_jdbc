@@ -55,7 +55,7 @@ public class ManualConnectionTest {
             System.out.println();
 
             // Test SQL execution
-            String sql = "SELECT \"item_id\", \"name\" FROM \"in.c-gymbeam\".\"items_catalog\" LIMIT 5";
+            String sql = "SELECT \"item_id\", \"name\" FROM \"in.c-main\".\"items_catalog\" LIMIT 5";
             System.out.println("--- Executing: " + sql + " ---");
             try (Statement stmt = conn.createStatement()) {
                 boolean hasRs = stmt.execute(sql);

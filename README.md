@@ -20,7 +20,7 @@ User provides only an **API token and stack URL** — the driver auto-discovers 
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-1.2.0.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-1.3.0.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -75,7 +75,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-1.2.0.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-1.3.0.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -94,7 +94,7 @@ SELECT * FROM "items_catalog" LIMIT 10;
 -- No need to write "in.c-main"."items_catalog" — Snowflake resolves it
 ```
 
-**How it works:** When a schema is set (via `USE SCHEMA` SQL, `Connection.setSchema()` API, or the `schema` connection property), the driver prepends a `USE SCHEMA` statement to each query job. Both statements execute in the same Snowflake session, so the database itself resolves unqualified table names — no client-side SQL rewriting.
+**How it works:** Each JDBC connection maps to a persistent Query Service session. When you execute `USE SCHEMA`, it takes effect in the server-side Snowflake session and persists across all subsequent queries on that connection — just like a native Snowflake session.
 
 You can also set the schema via the JDBC API:
 
@@ -161,7 +161,7 @@ Unit tests cover: `TypeMapper`, `ConnectionConfig`, `ArrayResultSet`, `KeboolaDr
 ```bash
 export KEBOOLA_TOKEN="your-token"
 export KEBOOLA_HOST="connection.keboola.com"  # optional
-java -cp target/keboola-jdbc-driver-1.2.0.jar com.keboola.jdbc.ManualConnectionTest
+java -cp target/keboola-jdbc-driver-1.3.0.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 ## Project Structure
@@ -190,6 +190,11 @@ src/main/java/com/keboola/jdbc/
 ```
 
 ## Changelog
+
+### 1.3.0
+
+- **Server-side session persistence**: Each JDBC connection now maps to a persistent Query Service session (via `sessionId`). `SET` variables, `USE SCHEMA`, and temporary tables persist across separate `execute()` calls — just like a native Snowflake connection.
+- **Multi-statement SQL support**: Semicolon-separated statements (e.g. `SET X=1; SELECT $X`) are split and submitted as a single job, respecting quoted strings.
 
 ### 1.2.0
 

@@ -274,11 +274,13 @@ class KeboolaDriverIT {
     @Test
     @Order(30)
     void useSchema_setsCurrentSchema() throws SQLException {
-        try (Statement stmt = connection.createStatement()) {
-            stmt.execute("USE SCHEMA \"in.c-main\"");
-            assertEquals("in.c-main", connection.getSchema());
+        String schema = discoverFirstSchema();
+        Assumptions.assumeTrue(schema != null, "Need at least one schema");
 
-            // Reset schema
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("USE SCHEMA \"" + schema + "\"");
+            assertEquals(schema, connection.getSchema());
+        } finally {
             connection.setSchema(null);
         }
     }
@@ -286,12 +288,24 @@ class KeboolaDriverIT {
     @Test
     @Order(31)
     void useSchema_caseInsensitive() throws SQLException {
-        try (Statement stmt = connection.createStatement()) {
-            stmt.execute("use schema \"in.c-main\"");
-            assertEquals("in.c-main", connection.getSchema());
+        String schema = discoverFirstSchema();
+        Assumptions.assumeTrue(schema != null, "Need at least one schema");
 
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("use schema \"" + schema + "\"");
+            assertEquals(schema, connection.getSchema());
+        } finally {
             connection.setSchema(null);
         }
+    }
+
+    private String discoverFirstSchema() throws SQLException {
+        try (ResultSet rs = connection.getMetaData().getSchemas()) {
+            if (rs.next()) {
+                return rs.getString("TABLE_SCHEM");
+            }
+        }
+        return null;
     }
 
     @Test
@@ -350,6 +364,56 @@ class KeboolaDriverIT {
             }
         } finally {
             connection.setSchema(null);
+        }
+    }
+
+    // =========================================================================
+    // Session persistence tests (SET variables across execute() calls)
+    // =========================================================================
+
+    @Test
+    @Order(34)
+    void sessionVariable_persistsAcrossExecuteCalls() throws SQLException {
+        // SET a variable in one execute() call, then SELECT it in another.
+        // This only works if the Query Service session persists across jobs.
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("SET JDBC_TEST_VAR = 42");
+
+            // Separate execute() call — different job, but same session
+            try (ResultSet rs = stmt.executeQuery("SELECT $JDBC_TEST_VAR AS val")) {
+                assertTrue(rs.next(), "Should have a result row");
+                assertEquals("42", rs.getString("val"));
+            }
+        }
+    }
+
+    @Test
+    @Order(35)
+    void sessionVariable_multiStatementInOneCall() throws SQLException {
+        // SET and SELECT in the same execute() call (semicolon-separated)
+        try (Statement stmt = connection.createStatement()) {
+            boolean hasRs = stmt.execute("SET JDBC_TEST_MULTI = 99; SELECT $JDBC_TEST_MULTI AS val");
+            assertTrue(hasRs, "Last statement is SELECT, should return ResultSet");
+
+            try (ResultSet rs = stmt.getResultSet()) {
+                assertTrue(rs.next());
+                assertEquals("99", rs.getString("val"));
+            }
+        }
+    }
+
+    @Test
+    @Order(36)
+    void sessionVariable_persistsAcrossStatements() throws SQLException {
+        // SET on one Statement instance, read on another — both share the connection session
+        try (Statement stmt1 = connection.createStatement()) {
+            stmt1.execute("SET JDBC_TEST_CROSS = 'hello'");
+        }
+
+        try (Statement stmt2 = connection.createStatement();
+             ResultSet rs = stmt2.executeQuery("SELECT $JDBC_TEST_CROSS AS val")) {
+            assertTrue(rs.next());
+            assertEquals("hello", rs.getString("val"));
         }
     }
 

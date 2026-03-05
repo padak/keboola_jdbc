@@ -13,7 +13,7 @@ JDBC mapping: Catalog = Project, Schema = Bucket (`in.c-main`), Table = Table.
 ## Build & Test Commands
 
 ```bash
-mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-1.2.0.jar)
+mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-1.3.0.jar)
 mvn test                   # Run all unit tests (126 tests)
 mvn test -pl . -Dtest=TypeMapperTest          # Run single test class
 mvn test -pl . -Dtest=TypeMapperTest#testVarchar  # Run single test method

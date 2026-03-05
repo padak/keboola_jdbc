@@ -30,6 +30,7 @@ import java.sql.Struct;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.concurrent.Executor;
 
 /**
@@ -64,6 +65,14 @@ public class KeboolaConnection implements Connection {
     private String currentSchema;
 
     /**
+     * Query Service session ID. Generated on connection init and sent with every job.
+     * The server-side session persists SET variables, USE SCHEMA, temp tables, etc.
+     * across jobs for up to 24 hours of inactivity. Maps JDBC Connection lifetime
+     * to a single Snowflake session on the server side.
+     */
+    private String sessionId;
+
+    /**
      * Establishes a connection to Keboola using the provided configuration.
      *
      * @param config the parsed connection configuration (host, token, optional branch/workspace)
@@ -82,13 +91,17 @@ public class KeboolaConnection implements Connection {
             workspaceId = resolveWorkspaceId(config);
             catalog = tokenInfo.getOwner().getName();
 
+            // Generate session ID — sent with every job so that SET, USE SCHEMA,
+            // temp tables etc. persist across execute() calls
+            this.sessionId = UUID.randomUUID().toString();
+
             // Apply default schema from connection config if provided
             if (config.getSchema() != null) {
                 this.currentSchema = config.getSchema();
             }
 
-            LOG.info("Connected: project='{}', branchId={}, workspaceId={}, schema={}",
-                    catalog, branchId, workspaceId, currentSchema);
+            LOG.info("Connected: project='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
+                    catalog, branchId, workspaceId, currentSchema, sessionId);
 
         } catch (KeboolaJdbcException e) {
             throw new SQLException("Failed to connect to Keboola: " + e.getMessage(), e);
@@ -588,6 +601,18 @@ public class KeboolaConnection implements Connection {
     /** Returns the resolved workspace ID used for all query executions on this connection. */
     public long getWorkspaceId() {
         return workspaceId;
+    }
+
+    // -------------------------------------------------------------------------
+    // Session management
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the Query Service session ID (generated on connection init).
+     * Sent with every job so that SET, USE SCHEMA, temp tables persist across calls.
+     */
+    public String getSessionId() {
+        return sessionId;
     }
 
     // -------------------------------------------------------------------------

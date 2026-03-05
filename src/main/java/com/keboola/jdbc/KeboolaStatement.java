@@ -15,8 +15,7 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
-import java.util.Arrays;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -70,6 +69,7 @@ public class KeboolaStatement implements Statement {
             Pattern.CASE_INSENSITIVE
     );
 
+
     private boolean closed = false;
 
     /**
@@ -102,54 +102,64 @@ public class KeboolaStatement implements Statement {
 
         LOG.debug("Executing SQL: {}", sql);
 
-        // Intercept USE SCHEMA/DATABASE commands locally - store schema for subsequent queries
-        if (interceptUseCommand(sql)) {
+        // Intercept USE SCHEMA/DATABASE commands locally (also sent to server via session)
+        interceptUseCommand(sql);
+
+        // Split input into individual statements (supports semicolon-separated SQL)
+        List<String> statements = new ArrayList<>(splitStatements(sql));
+
+        if (statements.isEmpty()) {
+            updateCount = 0;
             return false;
         }
 
         try {
-            // Build statement list: prepend USE SCHEMA if a default schema is set
-            List<String> statements = buildStatements(sql);
+            // On first job (no session yet), prepend USE SCHEMA if set from connection property
+            if (connection.getSessionId() == null) {
+                String schema = connection.getSchema();
+                if (schema != null && !schema.isEmpty()) {
+                    String useSchema = "USE SCHEMA \"" + schema + "\"";
+                    LOG.debug("First job — prepending schema from connection property: {}", useSchema);
+                    statements.add(0, useSchema);
+                }
+            }
 
-            QueryJob job = submitJob(statements);
-
-            // When we prepend USE SCHEMA, the user's statement is the last one
-            JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
+            // Submit job with session ID — the server-side session preserves
+            // SET variables, USE SCHEMA, temp tables across jobs
+            QueryJob job = queryClient.submitJob(branchId, workspaceId, statements, connection.getSessionId());
             currentJobId = job.getQueryJobId();
+
+            JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
 
             List<StatementStatus> stmtStatuses = jobStatus.getStatements();
             if (stmtStatuses == null || stmtStatuses.isEmpty()) {
                 throw new KeboolaJdbcException("Job " + job.getQueryJobId() + " returned no statement results");
             }
 
-            // The user's query is always the last statement
-            StatementStatus userStatus = stmtStatuses.get(stmtStatuses.size() - 1);
-
-            // Check all statements for errors (including USE SCHEMA)
+            // Check all statements for errors
             for (StatementStatus s : stmtStatuses) {
                 processStatementStatus(s);
             }
 
-            // Determine if this is a SELECT (has rows to fetch) or DML (only rows affected)
-            Integer numRows = userStatus.getNumberOfRows();
+            // The last statement determines the result type
+            StatementStatus lastStatus = stmtStatuses.get(stmtStatuses.size() - 1);
+            String lastSql = statements.get(statements.size() - 1).trim().toUpperCase();
+
+            Integer numRows = lastStatus.getNumberOfRows();
             boolean isSelect = numRows != null && numRows > 0;
 
             if (!isSelect) {
-                // Check if SQL starts with SELECT-like keywords (fallback heuristic)
-                String trimmedSql = sql.trim().toUpperCase();
-                isSelect = trimmedSql.startsWith("SELECT")
-                        || trimmedSql.startsWith("SHOW")
-                        || trimmedSql.startsWith("DESCRIBE")
-                        || trimmedSql.startsWith("WITH");
+                isSelect = lastSql.startsWith("SELECT")
+                        || lastSql.startsWith("SHOW")
+                        || lastSql.startsWith("DESCRIBE")
+                        || lastSql.startsWith("WITH");
             }
 
             if (isSelect) {
-                // SELECT statement - fetch first page and wrap in ResultSet
-                currentResultSet = fetchFirstPage(job.getQueryJobId(), userStatus.getId());
+                currentResultSet = fetchFirstPage(job.getQueryJobId(), lastStatus.getId());
                 return true;
             } else {
-                // DML statement - no ResultSet
-                Integer affected = userStatus.getRowsAffected();
+                Integer affected = lastStatus.getRowsAffected();
                 updateCount = affected != null ? affected : 0;
                 currentResultSet = null;
                 return false;
@@ -187,37 +197,8 @@ public class KeboolaStatement implements Statement {
     // Execution sub-steps
     // -------------------------------------------------------------------------
 
-    /**
-     * Builds the list of SQL statements to submit. When a default schema is set
-     * on the connection, a USE SCHEMA command is prepended so that Snowflake
-     * resolves unqualified table references in the user's SQL.
-     *
-     * @param userSql the user's SQL statement
-     * @return list of statements (1 or 2 elements)
-     */
-    private List<String> buildStatements(String userSql) throws SQLException {
-        String schema = connection.getSchema();
-        if (schema != null && !schema.isEmpty()) {
-            String useSchema = "USE SCHEMA \"" + schema + "\"";
-            LOG.debug("Prepending schema command: {}", useSchema);
-            return Arrays.asList(useSchema, userSql);
-        }
-        return Collections.singletonList(userSql);
-    }
-
-    /**
-     * Submits the SQL statements to the Query Service and returns the job descriptor.
-     *
-     * @param statements the SQL statements to execute (in order, same Snowflake session)
-     * @return the query job with job ID and session ID
-     * @throws Exception if the submission fails
-     */
-    private QueryJob submitJob(List<String> statements) throws Exception {
-        QueryJob job = queryClient.submitJob(branchId, workspaceId, statements);
-        currentJobId = job.getQueryJobId();
-        LOG.debug("Submitted job: jobId={}, statements={}", currentJobId, statements.size());
-        return job;
-    }
+    // buildStatements removed — with server-side sessions, no preamble needed.
+    // SET, USE SCHEMA, temp tables all persist in the session automatically.
 
     /**
      * Validates that the statement completed successfully.
@@ -518,25 +499,65 @@ public class KeboolaStatement implements Statement {
     // -------------------------------------------------------------------------
 
     /**
-     * Intercepts USE SCHEMA/DATABASE commands and stores the schema name on the
-     * connection. Subsequent queries will prepend a USE SCHEMA statement so that
-     * Snowflake resolves unqualified table names in the user's SQL.
+     * Splits a SQL string containing multiple semicolon-separated statements
+     * into individual statements. Handles quoted strings to avoid splitting
+     * on semicolons inside string literals.
      *
-     * @param sql the SQL to check
-     * @return true if the command was intercepted, false if it should be sent to the API
+     * @param sql the raw SQL input (may contain multiple statements)
+     * @return list of individual non-empty statements
      */
-    private boolean interceptUseCommand(String sql) throws SQLException {
-        Matcher matcher = USE_PATTERN.matcher(sql);
-        if (matcher.matches()) {
-            String name = matcher.group(1);
-            LOG.debug("Intercepted USE command - setting schema to: {}", name);
-            connection.setSchema(name);
-            updateCount = 0;
-            currentResultSet = null;
-            return true;
+    static List<String> splitStatements(String sql) {
+        List<String> statements = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inSingleQuote = false;
+        boolean inDoubleQuote = false;
+
+        for (int i = 0; i < sql.length(); i++) {
+            char c = sql.charAt(i);
+
+            if (c == '\'' && !inDoubleQuote) {
+                inSingleQuote = !inSingleQuote;
+            } else if (c == '"' && !inSingleQuote) {
+                inDoubleQuote = !inDoubleQuote;
+            }
+
+            if (c == ';' && !inSingleQuote && !inDoubleQuote) {
+                String stmt = current.toString().trim();
+                if (!stmt.isEmpty()) {
+                    statements.add(stmt);
+                }
+                current.setLength(0);
+            } else {
+                current.append(c);
+            }
         }
-        return false;
+
+        // Last statement (no trailing semicolon)
+        String last = current.toString().trim();
+        if (!last.isEmpty()) {
+            statements.add(last);
+        }
+
+        return statements;
     }
+
+    /**
+     * Detects USE SCHEMA/DATABASE commands and updates the local schema tracking
+     * on the connection (for getSchema() API). The command is still sent to the
+     * server via the session — this only keeps local state in sync.
+     */
+    private void interceptUseCommand(String sql) throws SQLException {
+        // Check each statement in the input for USE commands
+        for (String stmt : splitStatements(sql)) {
+            Matcher matcher = USE_PATTERN.matcher(stmt);
+            if (matcher.matches()) {
+                String name = matcher.group(1);
+                LOG.debug("Detected USE command - updating local schema to: {}", name);
+                connection.setSchema(name);
+            }
+        }
+    }
+
 
     private void checkClosed() throws SQLException {
         if (closed) {

@@ -76,17 +76,37 @@ public class QueryServiceClient {
      * @return job metadata including the queryJobId needed for polling
      * @throws KeboolaJdbcException on network error or non-retryable API error
      */
-    public QueryJob submitJob(long branchId, long workspaceId, java.util.List<String> statements) throws KeboolaJdbcException {
+    /**
+     * Submits SQL statements to the Query Service for asynchronous execution.
+     * All statements execute in the same Snowflake session within a single job.
+     * If a sessionId is provided, the job joins that existing session (preserving
+     * SET variables, USE SCHEMA, temp tables etc. from previous jobs).
+     *
+     * @param branchId    the branch to execute the query against
+     * @param workspaceId the workspace to execute the query in
+     * @param statements  the SQL statements to execute (in order, same session)
+     * @param sessionId   optional session ID to reuse (null for new session)
+     * @return job metadata including the queryJobId and sessionId
+     */
+    public QueryJob submitJob(long branchId, long workspaceId, java.util.List<String> statements, String sessionId) throws KeboolaJdbcException {
         String url  = queryServiceUrl + "/api/v1/branches/" + branchId + "/workspaces/" + workspaceId + "/queries";
-        String body = buildSubmitJobBody(statements);
+        String body = buildSubmitJobBody(statements, sessionId);
 
-        LOG.info("Submitting query job to {} ({} statement(s))", url, statements.size());
+        LOG.info("Submitting query job to {} ({} statement(s), sessionId={})", url, statements.size(), sessionId);
         for (int i = 0; i < statements.size(); i++) {
             LOG.debug("Statement [{}]: {}", i, statements.get(i));
         }
 
         String responseBody = executePost(url, body);
         return deserialize(responseBody, QueryJob.class);
+    }
+
+    /**
+     * Submits SQL statements without a session ID (new session).
+     * Convenience overload for backward compatibility.
+     */
+    public QueryJob submitJob(long branchId, long workspaceId, java.util.List<String> statements) throws KeboolaJdbcException {
+        return submitJob(branchId, workspaceId, statements, null);
     }
 
     /**
@@ -228,13 +248,14 @@ public class QueryServiceClient {
      * Builds the JSON body for a query submission request.
      * The statements list is sent directly per the Query Service API contract.
      */
-    private String buildSubmitJobBody(java.util.List<String> statements) throws KeboolaJdbcException {
+    private String buildSubmitJobBody(java.util.List<String> statements, String sessionId) throws KeboolaJdbcException {
         try {
-            return objectMapper.writeValueAsString(
-                    new java.util.HashMap<String, Object>() {{
-                        put("statements", statements);
-                    }}
-            );
+            java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+            body.put("statements", statements);
+            if (sessionId != null && !sessionId.isEmpty()) {
+                body.put("sessionId", sessionId);
+            }
+            return objectMapper.writeValueAsString(body);
         } catch (IOException e) {
             throw KeboolaJdbcException.connectionFailed("Failed to serialize query request body", e);
         }

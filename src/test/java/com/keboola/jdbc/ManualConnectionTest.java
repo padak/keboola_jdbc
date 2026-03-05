@@ -5,7 +5,7 @@ import java.util.Properties;
 
 /**
  * Manual test runner for the Keboola JDBC driver.
- * Run with: java -cp target/keboola-jdbc-driver-1.2.0.jar com.keboola.jdbc.ManualConnectionTest
+ * Run with: java -cp target/keboola-jdbc-driver-2.0.0.jar com.keboola.jdbc.ManualConnectionTest
  *
  * Requires env vars: KEBOOLA_TOKEN, KEBOOLA_HOST (optional, defaults to connection.keboola.com)
  */
@@ -35,57 +35,91 @@ public class ManualConnectionTest {
             System.out.println("Connected! Catalog: " + conn.getCatalog());
             System.out.println();
 
-            // Test metadata
             DatabaseMetaData meta = conn.getMetaData();
 
-            System.out.println("--- Schemas (buckets) ---");
+            System.out.println("--- Catalogs (databases) ---");
+            try (ResultSet rs = meta.getCatalogs()) {
+                while (rs.next()) {
+                    System.out.println("  " + rs.getString("TABLE_CAT"));
+                }
+            }
+            System.out.println();
+
+            System.out.println("--- Schemas ---");
             try (ResultSet rs = meta.getSchemas()) {
                 while (rs.next()) {
-                    System.out.println("  " + rs.getString("TABLE_SCHEM"));
+                    System.out.println("  " + rs.getString("TABLE_CATALOG") + "." + rs.getString("TABLE_SCHEM"));
                 }
             }
             System.out.println();
 
             System.out.println("--- Tables ---");
             try (ResultSet rs = meta.getTables(null, null, null, null)) {
+                int count = 0;
                 while (rs.next()) {
-                    System.out.println("  " + rs.getString("TABLE_SCHEM") + "." + rs.getString("TABLE_NAME"));
+                    System.out.println("  " + rs.getString("TABLE_CAT") + "." + rs.getString("TABLE_SCHEM") + "." + rs.getString("TABLE_NAME") + " [" + rs.getString("TABLE_TYPE") + "]");
+                    count++;
+                    if (count >= 20) {
+                        System.out.println("  ... (showing first 20)");
+                        break;
+                    }
                 }
             }
             System.out.println();
 
-            // Test SQL execution
-            String sql = "SELECT \"item_id\", \"name\" FROM \"in.c-main\".\"items_catalog\" LIMIT 5";
-            System.out.println("--- Executing: " + sql + " ---");
-            try (Statement stmt = conn.createStatement()) {
-                boolean hasRs = stmt.execute(sql);
-                System.out.println("execute() returned: " + hasRs);
-
-                if (hasRs) {
-                    try (ResultSet rs = stmt.getResultSet()) {
-                        ResultSetMetaData rsMeta = rs.getMetaData();
-                        int colCount = rsMeta.getColumnCount();
-                        System.out.println("Columns: " + colCount);
-                        for (int i = 1; i <= colCount; i++) {
-                            System.out.print("  " + rsMeta.getColumnName(i) + " (" + rsMeta.getColumnTypeName(i) + ")");
-                        }
-                        System.out.println();
-
-                        int rowNum = 0;
-                        while (rs.next()) {
-                            rowNum++;
-                            StringBuilder sb = new StringBuilder("  Row " + rowNum + ": ");
-                            for (int i = 1; i <= colCount; i++) {
-                                if (i > 1) sb.append(", ");
-                                sb.append(rs.getString(i));
-                            }
-                            System.out.println(sb);
-                        }
-                        System.out.println("Total rows: " + rowNum);
-                    }
-                } else {
-                    System.out.println("Update count: " + stmt.getUpdateCount());
+            // Dynamically find a table to query
+            String schema = null;
+            String table = null;
+            try (ResultSet rs = meta.getTables(null, null, null, new String[]{"TABLE"})) {
+                if (rs.next()) {
+                    schema = rs.getString("TABLE_SCHEM");
+                    table = rs.getString("TABLE_NAME");
                 }
+            }
+
+            if (schema != null && table != null) {
+                System.out.println("--- Columns for " + schema + "." + table + " ---");
+                try (ResultSet rs = meta.getColumns(null, schema, table, null)) {
+                    while (rs.next()) {
+                        System.out.println("  " + rs.getString("COLUMN_NAME") + " " + rs.getString("TYPE_NAME"));
+                    }
+                }
+                System.out.println();
+
+                String sql = "SELECT * FROM \"" + schema + "\".\"" + table + "\" LIMIT 5";
+                System.out.println("--- Executing: " + sql + " ---");
+                try (Statement stmt = conn.createStatement()) {
+                    boolean hasRs = stmt.execute(sql);
+                    System.out.println("execute() returned: " + hasRs);
+
+                    if (hasRs) {
+                        try (ResultSet rs = stmt.getResultSet()) {
+                            ResultSetMetaData rsMeta = rs.getMetaData();
+                            int colCount = rsMeta.getColumnCount();
+                            System.out.println("Columns: " + colCount);
+                            for (int i = 1; i <= colCount; i++) {
+                                System.out.print("  " + rsMeta.getColumnName(i) + " (" + rsMeta.getColumnTypeName(i) + ")");
+                            }
+                            System.out.println();
+
+                            int rowNum = 0;
+                            while (rs.next()) {
+                                rowNum++;
+                                StringBuilder sb = new StringBuilder("  Row " + rowNum + ": ");
+                                for (int i = 1; i <= colCount; i++) {
+                                    if (i > 1) sb.append(", ");
+                                    sb.append(rs.getString(i));
+                                }
+                                System.out.println(sb);
+                            }
+                            System.out.println("Total rows: " + rowNum);
+                        }
+                    } else {
+                        System.out.println("Update count: " + stmt.getUpdateCount());
+                    }
+                }
+            } else {
+                System.out.println("No tables found to query.");
             }
 
             System.out.println();

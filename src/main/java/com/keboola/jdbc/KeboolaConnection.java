@@ -5,6 +5,10 @@ import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.Branch;
+import com.keboola.jdbc.http.model.JobStatus;
+import com.keboola.jdbc.http.model.QueryJob;
+import com.keboola.jdbc.http.model.QueryResult;
+import com.keboola.jdbc.http.model.StatementStatus;
 import com.keboola.jdbc.http.model.TokenInfo;
 import com.keboola.jdbc.http.model.Workspace;
 import org.slf4j.Logger;
@@ -89,8 +93,6 @@ public class KeboolaConnection implements Connection {
             queryClient = new QueryServiceClient(queryServiceUrl, config.getToken());
             branchId = resolveBranchId(config);
             workspaceId = resolveWorkspaceId(config);
-            catalog = tokenInfo.getOwner().getName();
-
             // Generate session ID — sent with every job so that SET, USE SCHEMA,
             // temp tables etc. persist across execute() calls
             this.sessionId = UUID.randomUUID().toString();
@@ -100,7 +102,10 @@ public class KeboolaConnection implements Connection {
                 this.currentSchema = config.getSchema();
             }
 
-            LOG.info("Connected: project='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
+            // Discover current database and schema from the server
+            initCatalogAndSchema();
+
+            LOG.info("Connected: catalog='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
                     catalog, branchId, workspaceId, currentSchema, sessionId);
 
         } catch (KeboolaJdbcException e) {
@@ -166,6 +171,44 @@ public class KeboolaConnection implements Connection {
                 .findFirst()
                 .map(Branch::getId)
                 .orElseThrow(() -> new KeboolaJdbcException("No default branch found in the project"));
+    }
+
+    /**
+     * Queries the server for CURRENT_DATABASE() and CURRENT_SCHEMA() to initialize
+     * the catalog and schema fields. If a schema was specified via connection config,
+     * executes USE SCHEMA first.
+     */
+    private void initCatalogAndSchema() throws SQLException {
+        try {
+            // Build the init SQL — if a schema was set from config, apply it first
+            String initSql;
+            if (currentSchema != null && !currentSchema.isEmpty()) {
+                initSql = "USE SCHEMA \"" + currentSchema + "\"; SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()";
+            } else {
+                initSql = "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()";
+            }
+
+            // Use the query client directly to avoid recursion through createStatement
+            List<String> stmts = KeboolaStatement.splitStatements(initSql);
+            QueryJob job = queryClient.submitJob(branchId, workspaceId, stmts, sessionId);
+            JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
+
+            StatementStatus lastStmt = jobStatus.getStatements().get(jobStatus.getStatements().size() - 1);
+            QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStmt.getId(), 0, 100);
+
+            if (result.getData() != null && !result.getData().isEmpty()) {
+                List<String> row = result.getData().get(0);
+                if (row.size() >= 2) {
+                    String db = row.get(0);
+                    String sch = row.get(1);
+                    if (db != null) this.catalog = db;
+                    if (sch != null) this.currentSchema = sch;
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to discover current database/schema from server: {}", e.getMessage());
+            // Non-fatal — catalog/schema will be null until set explicitly
+        }
     }
 
     /**
@@ -293,7 +336,7 @@ public class KeboolaConnection implements Connection {
     @Override
     public DatabaseMetaData getMetaData() throws SQLException {
         checkClosed();
-        return new KeboolaDatabaseMetaData(this, storageClient, tokenInfo);
+        return new KeboolaDatabaseMetaData(this);
     }
 
     // -------------------------------------------------------------------------
@@ -330,7 +373,13 @@ public class KeboolaConnection implements Connection {
 
     @Override
     public void setCatalog(String catalog) throws SQLException {
-        // no-op: catalog is determined by the token / project
+        checkClosed();
+        if (catalog == null) return;
+        LOG.debug("setCatalog({})", catalog);
+        try (Statement stmt = createStatement()) {
+            stmt.execute("USE DATABASE \"" + catalog.replace("\"", "\"\"") + "\"");
+        }
+        this.catalog = catalog;
     }
 
     @Override
@@ -340,7 +389,13 @@ public class KeboolaConnection implements Connection {
 
     @Override
     public void setSchema(String schema) throws SQLException {
+        checkClosed();
         LOG.debug("setSchema({})", schema);
+        if (schema != null) {
+            try (Statement stmt = createStatement()) {
+                stmt.execute("USE SCHEMA \"" + schema.replace("\"", "\"\"") + "\"");
+            }
+        }
         this.currentSchema = schema;
     }
 
@@ -576,11 +631,6 @@ public class KeboolaConnection implements Connection {
     /** Returns the Keboola Connection host, e.g. "connection.keboola.com". */
     public String getHost() {
         return host;
-    }
-
-    /** Returns the Storage API client (used by KeboolaDatabaseMetaData). */
-    public StorageApiClient getStorageClient() {
-        return storageClient;
     }
 
     /** Returns the Query Service client (used by KeboolaStatement). */

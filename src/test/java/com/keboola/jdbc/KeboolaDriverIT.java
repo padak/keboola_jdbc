@@ -94,9 +94,9 @@ class KeboolaDriverIT {
     @Order(2)
     void connection_hasCatalog() throws SQLException {
         String catalog = connection.getCatalog();
-        assertNotNull(catalog, "Catalog (project name) should not be null");
+        assertNotNull(catalog, "Catalog (database) should not be null");
         assertFalse(catalog.isEmpty(), "Catalog should not be empty");
-        System.out.println("  Catalog (project): " + catalog);
+        System.out.println("  Catalog (database): " + catalog);
     }
 
     @Test
@@ -131,7 +131,7 @@ class KeboolaDriverIT {
             }
         }
 
-        assertFalse(schemas.isEmpty(), "Should have at least one schema (bucket)");
+        assertFalse(schemas.isEmpty(), "Should have at least one schema");
         System.out.println("  Schemas: " + schemas);
     }
 

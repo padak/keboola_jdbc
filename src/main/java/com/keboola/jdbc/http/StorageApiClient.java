@@ -6,8 +6,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.model.Branch;
-import com.keboola.jdbc.http.model.Bucket;
-import com.keboola.jdbc.http.model.TableInfo;
 import com.keboola.jdbc.http.model.TokenInfo;
 import com.keboola.jdbc.http.model.Workspace;
 import okhttp3.OkHttpClient;
@@ -120,35 +118,6 @@ public class StorageApiClient {
         LOG.info("Listing workspaces from {}", url);
         String body = executeGet(url);
         return deserializeList(body, Workspace[].class);
-    }
-
-    /**
-     * Lists all buckets visible to the token.
-     * Endpoint: GET https://{host}/v2/storage/buckets
-     *
-     * @return list of buckets; never null
-     * @throws KeboolaJdbcException on network or API error
-     */
-    public List<Bucket> listBuckets() throws KeboolaJdbcException {
-        String url = storageUrl("/v2/storage/buckets");
-        LOG.info("Listing buckets from {}", url);
-        String body = executeGet(url);
-        return deserializeList(body, Bucket[].class);
-    }
-
-    /**
-     * Lists all tables within a bucket, including column definitions and metadata.
-     * Endpoint: GET https://{host}/v2/storage/buckets/{bucketId}/tables?include=columns,columnMetadata
-     *
-     * @param bucketId full bucket ID, e.g. "in.c-main"
-     * @return list of tables with column information; never null
-     * @throws KeboolaJdbcException on network or API error
-     */
-    public List<TableInfo> listTables(String bucketId) throws KeboolaJdbcException {
-        String url = storageUrl("/v2/storage/buckets/" + bucketId + "/tables?include=columns,columnMetadata");
-        LOG.info("Listing tables for bucket '{}' from {}", bucketId, url);
-        String body = executeGet(url);
-        return deserializeList(body, TableInfo[].class);
     }
 
     // --- Internal helpers ---

@@ -2,6 +2,7 @@ package com.keboola.jdbc;
 
 import com.keboola.jdbc.config.ConnectionConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
+import com.keboola.jdbc.http.JobQueueClient;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.Branch;
@@ -63,6 +64,9 @@ public class KeboolaConnection implements Connection {
     private boolean readOnly = true;
     private String catalog;
     private String currentSchema;
+
+    /** Lazy-initialized Job Queue client (created on first access to _keboola.jobs). */
+    private volatile JobQueueClient jobQueueClient;
 
     /**
      * Query Service session ID. Generated on connection init and sent with every job.
@@ -601,6 +605,34 @@ public class KeboolaConnection implements Connection {
     /** Returns the resolved workspace ID used for all query executions on this connection. */
     public long getWorkspaceId() {
         return workspaceId;
+    }
+
+    // -------------------------------------------------------------------------
+    // Job Queue client (lazy init)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the Job Queue API client, lazily discovering the service URL on first access.
+     * Thread-safe via double-checked locking.
+     *
+     * @return the JobQueueClient instance
+     * @throws SQLException if Job Queue service discovery fails
+     */
+    public JobQueueClient getJobQueueClient() throws SQLException {
+        if (jobQueueClient == null) {
+            synchronized (this) {
+                if (jobQueueClient == null) {
+                    try {
+                        String queueUrl = storageClient.discoverServiceUrl("queue");
+                        jobQueueClient = new JobQueueClient(queueUrl, storageClient.getToken());
+                        LOG.info("Job Queue client initialized: {}", queueUrl);
+                    } catch (KeboolaJdbcException e) {
+                        throw new SQLException("Failed to discover Job Queue service: " + e.getMessage(), e);
+                    }
+                }
+            }
+        }
+        return jobQueueClient;
     }
 
     // -------------------------------------------------------------------------

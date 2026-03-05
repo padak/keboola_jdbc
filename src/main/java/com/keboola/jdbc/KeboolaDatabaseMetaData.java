@@ -1,5 +1,6 @@
 package com.keboola.jdbc;
 
+import com.keboola.jdbc.command.VirtualTableMetadata;
 import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.Bucket;
@@ -113,6 +114,11 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         List<List<Object>> rows = new ArrayList<>();
         String projectName = tokenInfo.getOwner() != null ? tokenInfo.getOwner().getName() : "Keboola";
 
+        // Add virtual _keboola schema
+        if (matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
+            rows.add(Arrays.asList(VirtualTableMetadata.SCHEMA_NAME, projectName));
+        }
+
         for (Bucket bucket : schemaCache.getBuckets()) {
             if (matchesPattern(bucket.getId(), schemaPattern)) {
                 rows.add(Arrays.asList(bucket.getId(), projectName));
@@ -128,16 +134,21 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     public ResultSet getTables(String catalog, String schemaPattern, String tableNamePattern, String[] types) throws SQLException {
         LOG.debug("getTables(catalog={}, schema={}, table={}, types={})", catalog, schemaPattern, tableNamePattern, types != null ? Arrays.toString(types) : "null");
 
-        // Filter by type - we only have TABLE type
+        // Determine which types to include
+        boolean includeTable = true;
+        boolean includeVirtual = true;
         if (types != null) {
-            boolean hasTable = false;
+            includeTable = false;
+            includeVirtual = false;
             for (String type : types) {
                 if ("TABLE".equalsIgnoreCase(type)) {
-                    hasTable = true;
-                    break;
+                    includeTable = true;
+                }
+                if ("VIRTUAL TABLE".equalsIgnoreCase(type)) {
+                    includeVirtual = true;
                 }
             }
-            if (!hasTable) {
+            if (!includeTable && !includeVirtual) {
                 return emptyTableResultSet();
             }
         }
@@ -149,20 +160,39 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         List<List<Object>> rows = new ArrayList<>();
         String projectName = tokenInfo.getOwner() != null ? tokenInfo.getOwner().getName() : "Keboola";
 
-        for (Bucket bucket : schemaCache.getBuckets()) {
-            if (!matchesPattern(bucket.getId(), schemaPattern)) {
-                continue;
-            }
-            for (TableInfo table : schemaCache.getTables(bucket.getId())) {
-                if (matchesPattern(table.getName(), tableNamePattern)) {
+        // Add virtual _keboola tables
+        if (includeVirtual && matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
+            for (String vtName : VirtualTableMetadata.getTableNames()) {
+                if (matchesPattern(vtName, tableNamePattern)) {
                     rows.add(Arrays.asList(
-                            projectName,           // TABLE_CAT
-                            bucket.getId(),         // TABLE_SCHEM
-                            table.getName(),        // TABLE_NAME
-                            "TABLE",                // TABLE_TYPE
-                            "",                     // REMARKS
+                            projectName,                          // TABLE_CAT
+                            VirtualTableMetadata.SCHEMA_NAME,     // TABLE_SCHEM
+                            vtName,                               // TABLE_NAME
+                            "VIRTUAL TABLE",                      // TABLE_TYPE
+                            "Keboola platform metadata",          // REMARKS
                             null, null, null, null, null
                     ));
+                }
+            }
+        }
+
+        // Add real Storage API tables
+        if (includeTable) {
+            for (Bucket bucket : schemaCache.getBuckets()) {
+                if (!matchesPattern(bucket.getId(), schemaPattern)) {
+                    continue;
+                }
+                for (TableInfo table : schemaCache.getTables(bucket.getId())) {
+                    if (matchesPattern(table.getName(), tableNamePattern)) {
+                        rows.add(Arrays.asList(
+                                projectName,           // TABLE_CAT
+                                bucket.getId(),         // TABLE_SCHEM
+                                table.getName(),        // TABLE_NAME
+                                "TABLE",                // TABLE_TYPE
+                                "",                     // REMARKS
+                                null, null, null, null, null
+                        ));
+                    }
                 }
             }
         }
@@ -191,6 +221,54 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         List<List<Object>> rows = new ArrayList<>();
         String projectName = tokenInfo.getOwner() != null ? tokenInfo.getOwner().getName() : "Keboola";
 
+        // Add columns for virtual _keboola tables
+        if (matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
+            for (String vtName : VirtualTableMetadata.getTableNames()) {
+                if (!matchesPattern(vtName, tableNamePattern)) {
+                    continue;
+                }
+                List<Object[]> vtCols = VirtualTableMetadata.getColumns(vtName);
+                if (vtCols == null) continue;
+                int vtOrdinal = 1;
+                for (Object[] colDef : vtCols) {
+                    String colName = (String) colDef[0];
+                    if (!matchesPattern(colName, columnNamePattern)) {
+                        vtOrdinal++;
+                        continue;
+                    }
+                    int jdbcType = (int) colDef[1];
+                    String typeName = (String) colDef[2];
+                    int displaySize = (int) colDef[3];
+
+                    rows.add(Arrays.asList(
+                            projectName,                          // TABLE_CAT
+                            VirtualTableMetadata.SCHEMA_NAME,     // TABLE_SCHEM
+                            vtName,                               // TABLE_NAME
+                            colName,                              // COLUMN_NAME
+                            jdbcType,                             // DATA_TYPE
+                            typeName,                             // TYPE_NAME
+                            displaySize,                          // COLUMN_SIZE
+                            null,                                 // BUFFER_LENGTH
+                            0,                                    // DECIMAL_DIGITS
+                            10,                                   // NUM_PREC_RADIX
+                            columnNullable,                       // NULLABLE
+                            "",                                   // REMARKS
+                            null,                                 // COLUMN_DEF
+                            0,                                    // SQL_DATA_TYPE
+                            0,                                    // SQL_DATETIME_SUB
+                            displaySize,                          // CHAR_OCTET_LENGTH
+                            vtOrdinal,                            // ORDINAL_POSITION
+                            "YES",                                // IS_NULLABLE
+                            null, null, null, null,               // SCOPE_*
+                            "NO",                                 // IS_AUTOINCREMENT
+                            "NO"                                  // IS_GENERATEDCOLUMN
+                    ));
+                    vtOrdinal++;
+                }
+            }
+        }
+
+        // Add columns for real Storage API tables
         for (Bucket bucket : schemaCache.getBuckets()) {
             if (!matchesPattern(bucket.getId(), schemaPattern)) {
                 continue;
@@ -278,6 +356,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         List<String> columns = Collections.singletonList("TABLE_TYPE");
         List<List<Object>> rows = new ArrayList<>();
         rows.add(Collections.singletonList("TABLE"));
+        rows.add(Collections.singletonList("VIRTUAL TABLE"));
         return new ArrayResultSet(columns, rows);
     }
 

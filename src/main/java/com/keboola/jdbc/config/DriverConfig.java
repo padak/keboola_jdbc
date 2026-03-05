@@ -13,9 +13,9 @@ public final class DriverConfig {
     // --- Driver identity ---
 
     public static final String DRIVER_NAME    = "Keboola JDBC Driver";
-    public static final String DRIVER_VERSION = "1.3.0";
+    public static final String DRIVER_VERSION = "1.4.0-experimental";
     public static final int    MAJOR_VERSION  = 1;
-    public static final int    MINOR_VERSION  = 3;
+    public static final int    MINOR_VERSION  = 4;
 
     // --- JDBC URL ---
 
@@ -48,4 +48,10 @@ public final class DriverConfig {
 
     /** Number of times to retry a failed HTTP request before propagating the error. */
     public static final int  MAX_RETRIES           = 3;
+
+    // --- Virtual tables ---
+
+    /** Default row limit for virtual table queries when no LIMIT is specified. */
+    public static final int VIRTUAL_TABLE_DEFAULT_LIMIT = 100;
+
 }

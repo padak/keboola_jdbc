@@ -63,6 +63,11 @@ public class StorageApiClient {
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
+    /** Returns the token used for API authentication (needed by JobQueueClient). */
+    public String getToken() {
+        return token;
+    }
+
     // --- Public API methods ---
 
     /**
@@ -149,6 +154,79 @@ public class StorageApiClient {
         LOG.info("Listing tables for bucket '{}' from {}", bucketId, url);
         String body = executeGet(url);
         return deserializeList(body, TableInfo[].class);
+    }
+
+    // --- Virtual table API methods ---
+
+    /**
+     * Lists all components with their configurations.
+     * Endpoint: GET https://{host}/v2/storage/components
+     *
+     * @return list of component JSON nodes; never null
+     * @throws KeboolaJdbcException on network or API error
+     */
+    public List<JsonNode> listComponents() throws KeboolaJdbcException {
+        String url = storageUrl("/v2/storage/components");
+        LOG.info("Listing components from {}", url);
+        String body = executeGet(url);
+        return deserializeJsonArray(body);
+    }
+
+    /**
+     * Lists recent storage events.
+     * Endpoint: GET https://{host}/v2/storage/events?limit=N
+     *
+     * @param limit maximum number of events to return
+     * @return list of event JSON nodes; never null
+     * @throws KeboolaJdbcException on network or API error
+     */
+    public List<JsonNode> listEvents(int limit) throws KeboolaJdbcException {
+        String url = storageUrl("/v2/storage/events?limit=" + limit);
+        LOG.info("Listing events from {}", url);
+        String body = executeGet(url);
+        return deserializeJsonArray(body);
+    }
+
+    /**
+     * Lists all tables across all buckets with metadata.
+     * Endpoint: GET https://{host}/v2/storage/tables?include=columns,buckets
+     *
+     * @return list of table JSON nodes; never null
+     * @throws KeboolaJdbcException on network or API error
+     */
+    public List<JsonNode> listAllTables() throws KeboolaJdbcException {
+        String url = storageUrl("/v2/storage/tables?include=columns,buckets");
+        LOG.info("Listing all tables from {}", url);
+        String body = executeGet(url);
+        return deserializeJsonArray(body);
+    }
+
+    /**
+     * Lists all buckets as raw JSON nodes (for virtual table display with full metadata).
+     * Endpoint: GET https://{host}/v2/storage/buckets
+     *
+     * @return list of bucket JSON nodes; never null
+     * @throws KeboolaJdbcException on network or API error
+     */
+    public List<JsonNode> listBucketsRaw() throws KeboolaJdbcException {
+        String url = storageUrl("/v2/storage/buckets");
+        LOG.info("Listing buckets (raw) from {}", url);
+        String body = executeGet(url);
+        return deserializeJsonArray(body);
+    }
+
+    /**
+     * Discovers a service URL from the Storage API index by service ID.
+     *
+     * @param serviceId the service ID to find (e.g. "queue", "query")
+     * @return base URL of the service
+     * @throws KeboolaJdbcException if the service is not found
+     */
+    public String discoverServiceUrl(String serviceId) throws KeboolaJdbcException {
+        String url = storageUrl("/v2/storage");
+        LOG.info("Discovering service '{}' URL from {}", serviceId, url);
+        String body = executeGet(url);
+        return parseServiceUrl(body, serviceId, url);
     }
 
     // --- Internal helpers ---
@@ -297,6 +375,64 @@ public class StorageApiClient {
         } catch (IOException e) {
             throw KeboolaJdbcException.connectionFailed(
                     "Failed to deserialize API response as list of " + arrayType.getComponentType().getSimpleName(), e
+            );
+        }
+    }
+
+    /**
+     * Parses a service URL from the Storage API index response by service ID.
+     * Generic version of parseQueryServiceUrl.
+     */
+    private String parseServiceUrl(String responseBody, String serviceId, String requestUrl)
+            throws KeboolaJdbcException {
+        try {
+            JsonNode root = objectMapper.readTree(responseBody);
+            JsonNode services = root.get("services");
+            if (services == null || !services.isArray()) {
+                throw KeboolaJdbcException.connectionFailed(
+                        "Storage API index response does not contain 'services' array from " + requestUrl
+                );
+            }
+            for (JsonNode service : services) {
+                JsonNode idNode = service.get("id");
+                JsonNode urlNode = service.get("url");
+                if (idNode != null && serviceId.equals(idNode.asText()) && urlNode != null) {
+                    String serviceUrl = urlNode.asText();
+                    if (!serviceUrl.startsWith("https://")) {
+                        throw KeboolaJdbcException.connectionFailed(
+                                serviceId + " service URL must use HTTPS, got: " + serviceUrl
+                        );
+                    }
+                    LOG.info("Discovered {} service URL: {}", serviceId, serviceUrl);
+                    return serviceUrl;
+                }
+            }
+            throw KeboolaJdbcException.connectionFailed(
+                    "Service '" + serviceId + "' not found in 'services' array from " + requestUrl
+            );
+        } catch (IOException e) {
+            throw KeboolaJdbcException.connectionFailed(
+                    "Failed to parse Storage API index response from " + requestUrl, e
+            );
+        }
+    }
+
+    /**
+     * Deserializes a JSON array string into a list of JsonNode objects.
+     */
+    private List<JsonNode> deserializeJsonArray(String json) throws KeboolaJdbcException {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            List<JsonNode> result = new java.util.ArrayList<>();
+            if (root.isArray()) {
+                for (JsonNode node : root) {
+                    result.add(node);
+                }
+            }
+            return result;
+        } catch (IOException e) {
+            throw KeboolaJdbcException.connectionFailed(
+                    "Failed to parse JSON array response", e
             );
         }
     }

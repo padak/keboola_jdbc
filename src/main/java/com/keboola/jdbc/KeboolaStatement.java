@@ -19,6 +19,8 @@ import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * JDBC Statement implementation that submits SQL queries to the Keboola Query Service,
@@ -145,12 +147,12 @@ public class KeboolaStatement implements Statement {
 
             if (isSelect) {
                 currentResultSet = fetchFirstPage(job.getQueryJobId(), lastStatus.getId());
-                updateSchemaFromBackendContext(currentResultSet.getFirstPageResult());
+                updateSchemaFromBackendContext(currentResultSet.getFirstPageResult(), statements);
                 return true;
             } else {
                 // For non-SELECT statements, fetch the result to get backendContext
                 QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStatus.getId(), 0, 1);
-                updateSchemaFromBackendContext(result);
+                updateSchemaFromBackendContext(result, statements);
                 Integer affected = lastStatus.getRowsAffected();
                 updateCount = affected != null ? affected : 0;
                 currentResultSet = null;
@@ -534,20 +536,47 @@ public class KeboolaStatement implements Statement {
     }
 
     /**
-     * Updates the connection's local schema/catalog from the backendContext
-     * returned by the Query Service in result responses.
+     * Pattern to match USE SCHEMA/DATABASE commands for fallback local tracking.
+     * Used only when backendContext is not available in the server response.
      */
-    private void updateSchemaFromBackendContext(QueryResult result) {
-        if (result == null) return;
-        BackendContext ctx = result.getBackendContext();
-        if (ctx == null) return;
-        if (ctx.getSchema() != null) {
-            LOG.debug("Updating schema from backendContext: {}", ctx.getSchema());
-            connection.updateSchemaFromServer(ctx.getSchema());
+    private static final Pattern USE_PATTERN = Pattern.compile(
+            "^\\s*USE\\s+(?:SCHEMA|DATABASE)?\\s*\"?([^\"\\s;]+)\"?\\s*;?\\s*$",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    /**
+     * Updates the connection's local schema/catalog from the backendContext
+     * returned by the Query Service in result responses. Falls back to
+     * parsing USE commands from the SQL if backendContext is not available.
+     */
+    private void updateSchemaFromBackendContext(QueryResult result, List<String> statements) {
+        boolean updated = false;
+        if (result != null) {
+            BackendContext ctx = result.getBackendContext();
+            if (ctx != null) {
+                if (ctx.getSchema() != null) {
+                    LOG.debug("Updating schema from backendContext: {}", ctx.getSchema());
+                    connection.updateSchemaFromServer(ctx.getSchema());
+                    updated = true;
+                }
+                if (ctx.getCatalog() != null) {
+                    LOG.debug("Updating catalog from backendContext: {}", ctx.getCatalog());
+                    connection.updateCatalogFromServer(ctx.getCatalog());
+                    updated = true;
+                }
+            }
         }
-        if (ctx.getCatalog() != null) {
-            LOG.debug("Updating catalog from backendContext: {}", ctx.getCatalog());
-            connection.updateCatalogFromServer(ctx.getCatalog());
+
+        // Fallback: parse USE commands locally if backendContext was not available
+        if (!updated && statements != null) {
+            for (String stmt : statements) {
+                Matcher matcher = USE_PATTERN.matcher(stmt);
+                if (matcher.matches()) {
+                    String name = matcher.group(1);
+                    LOG.debug("Updating schema from USE command (fallback): {}", name);
+                    connection.updateSchemaFromServer(name);
+                }
+            }
         }
     }
 

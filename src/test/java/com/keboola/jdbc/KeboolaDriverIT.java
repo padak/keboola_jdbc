@@ -301,8 +301,13 @@ class KeboolaDriverIT {
 
     private String discoverFirstSchema() throws SQLException {
         try (ResultSet rs = connection.getMetaData().getSchemas()) {
-            if (rs.next()) {
-                return rs.getString("TABLE_SCHEM");
+            while (rs.next()) {
+                String name = rs.getString("TABLE_SCHEM");
+                // Skip system/virtual schemas that cannot be USEd in Snowflake
+                if ("INFORMATION_SCHEMA".equals(name) || "_keboola".equals(name)) {
+                    continue;
+                }
+                return name;
             }
         }
         return null;
@@ -311,13 +316,19 @@ class KeboolaDriverIT {
     @Test
     @Order(32)
     void useSchema_thenSelectWithoutQualification() throws SQLException {
-        // Find a real bucket/table from metadata to test against
+        // Find a real (non-virtual, non-system) table from metadata to test against
         String schema = null;
         String table = null;
         try (ResultSet rs = connection.getMetaData().getTables(null, null, null, null)) {
-            if (rs.next()) {
-                schema = rs.getString("TABLE_SCHEM");
+            while (rs.next()) {
+                String s = rs.getString("TABLE_SCHEM");
+                // Skip virtual and system schemas
+                if ("_keboola".equals(s) || "INFORMATION_SCHEMA".equals(s)) {
+                    continue;
+                }
+                schema = s;
                 table = rs.getString("TABLE_NAME");
+                break;
             }
         }
         Assumptions.assumeTrue(schema != null && table != null,
@@ -344,9 +355,14 @@ class KeboolaDriverIT {
         String schema = null;
         String table = null;
         try (ResultSet rs = connection.getMetaData().getTables(null, null, null, null)) {
-            if (rs.next()) {
-                schema = rs.getString("TABLE_SCHEM");
+            while (rs.next()) {
+                String s = rs.getString("TABLE_SCHEM");
+                if ("_keboola".equals(s) || "INFORMATION_SCHEMA".equals(s)) {
+                    continue;
+                }
+                schema = s;
                 table = rs.getString("TABLE_NAME");
+                break;
             }
         }
         Assumptions.assumeTrue(schema != null && table != null,

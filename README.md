@@ -22,7 +22,7 @@ All metadata (databases, schemas, tables, columns) comes from Snowflake SHOW com
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-2.1.1.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-2.1.2.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -77,7 +77,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.1.1.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.1.2.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -299,7 +299,11 @@ src/main/java/com/keboola/jdbc/
 
 ## Changelog
 
-### 2.1.1
+### 2.1.2
+
+- **Filter `SNOWFLAKE_SAMPLE_DATA` from sidebar**: Added `SNOWFLAKE_SAMPLE_DATA` to the list of hidden Snowflake system databases. This demo database is not part of the Keboola project and was cluttering the database navigator. Now filtered alongside `SNOWFLAKE` and `SNOWFLAKE_LEARNING_DB`.
+
+### 2.1.1 (previous)
 
 - **Server-side schema/catalog tracking via backendContext**: Replaced client-side `USE SCHEMA/DATABASE` regex parsing (`interceptUseCommand`) with server-reported `backendContext` from Query Service result responses. The driver now reads `backendContext.catalog` and `backendContext.schema` after each query execution to keep local state in sync with Snowflake. This eliminates the recursion bug root cause (fixed as workaround in 2.1.0) and is more accurate — catches implicit schema changes too. Credit: [@davidesner](https://github.com/davidesner) ([PR #5](https://github.com/padak/keboola_jdbc/pull/5)).
 - **Initial schema sent as standalone job**: When `schema` connection property is set, a `USE SCHEMA` command is now sent as a standalone job during connection init, instead of being prepended to the first user query.

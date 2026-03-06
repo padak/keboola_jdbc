@@ -13,7 +13,7 @@ public final class DriverConfig {
     // --- Driver identity ---
 
     public static final String DRIVER_NAME    = "Keboola JDBC Driver";
-    public static final String DRIVER_VERSION = "2.1.1";
+    public static final String DRIVER_VERSION = "2.1.2";
     public static final int    MAJOR_VERSION  = 2;
     public static final int    MINOR_VERSION  = 1;
 
@@ -58,7 +58,7 @@ public final class DriverConfig {
 
     /** Snowflake system databases that should be hidden from the sidebar. */
     public static final java.util.Set<String> FILTERED_DATABASES = java.util.Collections.unmodifiableSet(
-            new java.util.HashSet<>(java.util.Arrays.asList("SNOWFLAKE", "SNOWFLAKE_LEARNING_DB"))
+            new java.util.HashSet<>(java.util.Arrays.asList("SNOWFLAKE", "SNOWFLAKE_LEARNING_DB", "SNOWFLAKE_SAMPLE_DATA"))
     );
 
 }

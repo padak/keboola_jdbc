@@ -13,7 +13,7 @@ JDBC mapping: Catalog = Database (from Snowflake), Schema = Schema (from Snowfla
 ## Build & Test Commands
 
 ```bash
-mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.1.1.jar)
+mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.1.2.jar)
 mvn test                   # Run all unit tests
 mvn test -pl . -Dtest=TypeMapperTest          # Run single test class
 mvn test -pl . -Dtest=TypeMapperTest#testVarchar  # Run single test method
@@ -22,7 +22,7 @@ mvn verify -Pkeboola-integration              # Run integration tests (needs KEB
 
 Manual integration test:
 ```bash
-KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-2.1.1.jar com.keboola.jdbc.ManualConnectionTest
+KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-2.1.2.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 **After every version bump or code change, always run `make dist`** to rebuild the uber-jar and copy it to `dist/`. The `dist/` directory contains the release-ready jars that users download. **Never delete old jars from `dist/`** — keep all previous versions for version history.

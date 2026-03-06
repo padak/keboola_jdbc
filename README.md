@@ -230,6 +230,7 @@ Connection conn = DriverManager.getConnection(url, props);
 - **Async execution**: Submit job > poll with exponential backoff (100ms to 2s) > fetch paginated results
 - **Command dispatcher**: Intercepts virtual table queries and KEBOOLA commands before they reach Query Service
 - **Virtual table isolation**: `_keboola` schema is injected into metadata results but excluded from Snowflake `SHOW` commands to avoid "object does not exist" errors
+- **Schema tracking via backendContext**: After each query, `backendContext.catalog` and `backendContext.schema` from the Query Service response update local state. Falls back to USE command regex parsing when backendContext is unavailable.
 - **Uber-jar**: OkHttp, Jackson, and Kotlin runtime relocated to avoid classpath conflicts
 - **Type mapping**: Snowflake types mapped to `java.sql.Types` (VARCHAR, NUMBER, BOOLEAN, DATE, TIMESTAMP, etc.)
 
@@ -245,7 +246,8 @@ Unit tests cover: `TypeMapper`, `ConnectionConfig`, `ArrayResultSet`, `KeboolaDr
 
 ```bash
 export KEBOOLA_TOKEN="your-token"
-export KEBOOLA_WORKSPACE="your-workspace-id"  # recommended
+export KEBOOLA_HOST="connection.keboola.com"
+export KEBOOLA_WORKSPACE="your-workspace-id"
 make test-e2e                                   # 32 E2E tests
 ```
 
@@ -253,8 +255,8 @@ make test-e2e                                   # 32 E2E tests
 
 ```bash
 export KEBOOLA_TOKEN="your-token"
-export KEBOOLA_WORKSPACE="your-workspace-id"    # recommended
-export KEBOOLA_HOST="connection.keboola.com"    # optional
+export KEBOOLA_HOST="connection.keboola.com"
+export KEBOOLA_WORKSPACE="your-workspace-id"
 make manual-test
 ```
 

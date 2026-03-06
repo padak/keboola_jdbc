@@ -15,7 +15,7 @@ JDBC mapping: Catalog = Database (from Snowflake), Schema = Schema (from Snowfla
 ## Build & Test Commands
 
 ```bash
-mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-3.0.1-experimental.jar)
+mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-3.0.2-experimental.jar)
 mvn test                   # Run all 235 unit tests
 mvn test -pl . -Dtest=TypeMapperTest          # Run single test class
 mvn test -pl . -Dtest=TypeMapperTest#testVarchar  # Run single test method
@@ -26,7 +26,7 @@ make dist                  # Build uber-jar and copy to dist/
 
 Manual integration test:
 ```bash
-KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-3.0.1-experimental.jar com.keboola.jdbc.ManualConnectionTest
+KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-3.0.2-experimental.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 **After every version bump or code change, always run `make dist`** to rebuild the uber-jar and copy it to `dist/`. The `dist/` directory contains the release-ready jars that users download. **Never delete old jars from `dist/`** — keep all previous versions for version history.
@@ -49,6 +49,11 @@ Runtime switching via `KEBOOLA USE BACKEND duckdb|queryservice` command.
 - `KEBOOLA PULL QUERY <sql> INTO <local_table>` — pull query result into local DuckDB
 - `KEBOOLA PUSH TABLE <local_table> [INTO <target>]` — push local DuckDB table to cloud (Snowflake)
 - `KEBOOLA SESSION LOG` — view SQL session log from DuckDB system table
+- `KEBOOLA KAI ASK <question>` — ask Kai AI assistant a free-form question
+- `KEBOOLA KAI SQL <description>` — ask Kai to generate SQL for current backend
+- `KEBOOLA KAI HELP <log_id>` — ask Kai to help fix a query from session log
+- `KEBOOLA KAI TRANSLATE TO SNOWFLAKE|DUCKDB <sql>` — translate SQL to target dialect
+- `KEBOOLA KAI TRANSLATE <log_id>` — translate session log query to the other dialect
 
 ### SQL Execution Flow (Query Service)
 `KeboolaStatement.execute(sql)` -> `QueryServiceBackend.execute()` -> `QueryServiceClient.submitJob()` -> poll `waitForCompletion()` with exponential backoff (100ms->2s) -> `fetchResults()` (paginated, 1000 rows/page) -> `KeboolaResultSet` (lazy paging)
@@ -77,7 +82,7 @@ Runtime switching via `KEBOOLA USE BACKEND duckdb|queryservice` command.
 
 ## Testing
 
-- Unit tests (235): TypeMapperTest, ConnectionConfigTest, ConnectionConfigDuckDbTest, ArrayResultSetTest, KeboolaDriverTest, KeboolaStatementTest, SchemaCacheTest, DuckDbBackendTest, QueryServiceBackendTest, BackendSwitchHandlerTest, PullCommandHandlerTest, PushCommandHandlerTest, SessionLogHandlerTest, SqlSessionLoggerTest, HelpCommandHandlerTest, VirtualTableHandlerTest, KeboolaCommandDispatcherTest
+- Unit tests (277): TypeMapperTest, ConnectionConfigTest, ConnectionConfigDuckDbTest, ArrayResultSetTest, KeboolaDriverTest, KeboolaStatementTest, SchemaCacheTest, DuckDbBackendTest, QueryServiceBackendTest, BackendSwitchHandlerTest, PullCommandHandlerTest, PushCommandHandlerTest, SessionLogHandlerTest, SqlSessionLoggerTest, HelpCommandHandlerTest, VirtualTableHandlerTest, KeboolaCommandDispatcherTest, KaiClientTest, KaiResponseTest, KaiCommandHandlerTest
 - Integration tests: `DuckDbDriverIT` (no token needed), `BackendSwitchIT` (no token needed), `PullCommandIT` (needs KEBOOLA_TOKEN), `PushCommandIT` (needs KEBOOLA_TOKEN), `KeboolaDriverIT` (needs KEBOOLA_TOKEN)
 - `ManualConnectionTest` is a CLI integration test (not run by `mvn test`), needs `KEBOOLA_TOKEN` env var
 - Use JUnit 5 + Mockito 5.11 + DuckDB JDBC 1.1.3

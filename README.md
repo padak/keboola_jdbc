@@ -22,7 +22,7 @@ All metadata (databases, schemas, tables, columns) comes from Snowflake SHOW com
 make dist
 ```
 
-Produces an uber-jar at `dist/keboola-jdbc-driver-3.0.1-experimental.jar` (~78 MB, all dependencies shaded + embedded DuckDB).
+Produces an uber-jar at `dist/keboola-jdbc-driver-3.0.2-experimental.jar` (~78 MB, all dependencies shaded + embedded DuckDB).
 
 Requires **Java 11+**.
 
@@ -90,7 +90,7 @@ try (Connection conn = DriverManager.getConnection(localUrl, localProps)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `dist/keboola-jdbc-driver-3.0.1-experimental.jar`
+3. **Libraries** tab > **Add File** > select `dist/keboola-jdbc-driver-3.0.2-experimental.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -425,6 +425,17 @@ src/main/java/com/keboola/jdbc/
 - **Jan Botorek** ([@jbotor](https://github.com/jbotor)) — found and fixed `StackOverflowError` recursion in `setSchema()`/`interceptUseCommand()` loop (2.1.0). See [PR #4](https://github.com/padak/keboola_jdbc/pull/4).
 
 ## Changelog
+
+### 3.0.2-experimental
+
+- **Kai AI assistant integration**: New `KEBOOLA KAI` commands let you interact with Keboola's AI assistant directly from DBeaver/DataGrip.
+  - `KEBOOLA KAI ASK <question>` — ask free-form questions about your project
+  - `KEBOOLA KAI SQL <description>` — generate SQL for the current backend with workspace context
+  - `KEBOOLA KAI HELP <log_id>` — ask Kai to help fix a failed query from session log
+  - `KEBOOLA KAI TRANSLATE TO SNOWFLAKE|DUCKDB <sql>` — translate SQL between dialects
+  - `KEBOOLA KAI TRANSLATE <log_id>` — auto-translate a session log query to the other dialect
+- **KaiClient with SSE parsing**: Blocking SSE collection converts Kai's streaming API into synchronous JDBC ResultSets. 120s timeout for AI responses.
+- **Chat session per connection**: One chat ID per JDBC connection provides conversational context continuity with Kai.
 
 ### 3.0.1-experimental
 

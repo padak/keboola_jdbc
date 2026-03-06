@@ -7,6 +7,7 @@ import com.keboola.jdbc.config.ConnectionConfig;
 import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.JobQueueClient;
+import com.keboola.jdbc.http.KaiClient;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.Branch;
@@ -83,6 +84,12 @@ public class KeboolaConnection implements Connection {
 
     /** Lazy-initialized session logger for SQL execution tracking (requires DuckDB backend). */
     private SqlSessionLogger sessionLogger;
+
+    /** Lazy-initialized Kai AI client (created on first KEBOOLA KAI command). */
+    private volatile KaiClient kaiClient;
+
+    /** Chat session ID for Kai - one per connection for conversational context continuity. */
+    private String kaiChatId;
 
     /**
      * Query Service session ID. Generated on connection init and sent with every job.
@@ -633,6 +640,47 @@ public class KeboolaConnection implements Connection {
     }
 
     public String getSessionId() { return sessionId; }
+
+    /**
+     * Returns the Kai AI client, lazily discovering the service URL on first access.
+     * Thread-safe via double-checked locking.
+     *
+     * @throws SQLException if no token is available or Kai service cannot be discovered
+     */
+    public KaiClient getKaiClient() throws SQLException {
+        if (kaiClient == null) {
+            synchronized (this) {
+                if (kaiClient == null) {
+                    if (storageClient == null) {
+                        throw new SQLException(
+                                "Kai is not available: no Keboola token was provided. "
+                                + "Connect with a Storage API token to use Kai.");
+                    }
+                    try {
+                        String kaiUrl = storageClient.discoverServiceUrl(DriverConfig.KAI_SERVICE_ID);
+                        String storageApiUrl = "https://" + host;
+                        kaiClient = new KaiClient(kaiUrl, storageClient.getToken(), storageApiUrl);
+                        LOG.info("Kai client initialized: {}", kaiUrl);
+                    } catch (KeboolaJdbcException e) {
+                        throw new SQLException(
+                                "Kai is not available on this stack: " + e.getMessage(), e);
+                    }
+                }
+            }
+        }
+        return kaiClient;
+    }
+
+    /**
+     * Returns (or creates) a stable chat session ID for Kai conversations.
+     * One UUID per connection lifetime for context continuity.
+     */
+    public String getOrCreateKaiChatId() {
+        if (kaiChatId == null) {
+            kaiChatId = UUID.randomUUID().toString();
+        }
+        return kaiChatId;
+    }
 
     /**
      * Returns the session logger, lazily creating it on first access.

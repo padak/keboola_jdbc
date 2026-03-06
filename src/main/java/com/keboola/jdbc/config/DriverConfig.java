@@ -13,7 +13,7 @@ public final class DriverConfig {
     // --- Driver identity ---
 
     public static final String DRIVER_NAME    = "Keboola JDBC Driver";
-    public static final String DRIVER_VERSION = "3.0.1-experimental";
+    public static final String DRIVER_VERSION = "3.0.2-experimental";
     public static final int    MAJOR_VERSION  = 3;
     public static final int    MINOR_VERSION  = 0;
 
@@ -74,6 +74,22 @@ public final class DriverConfig {
 
     /** System table name for SQL session logging (stored in DuckDB). */
     public static final String SESSION_LOG_TABLE = "_keboola_session_log";
+
+    // --- Filtered databases ---
+
+    // --- Kai AI assistant ---
+
+    /** HTTP timeout for Kai API calls, in seconds. AI responses are slow, so this is much higher than regular HTTP. */
+    public static final long   KAI_HTTP_TIMEOUT_SECONDS = 120;
+
+    /** Service ID used to discover Kai's URL from the Storage API services index. */
+    public static final String KAI_SERVICE_ID = "kai-assistant";
+
+    /** Default chat model for Kai conversations. */
+    public static final String KAI_DEFAULT_MODEL = "claude-sonnet-4-20250514";
+
+    /** Visibility type for Kai chat sessions. */
+    public static final String KAI_VISIBILITY_TYPE = "private";
 
     // --- Filtered databases ---
 

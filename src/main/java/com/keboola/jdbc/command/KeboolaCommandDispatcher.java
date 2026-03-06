@@ -25,6 +25,7 @@ public class KeboolaCommandDispatcher {
         handlers.add(new PullCommandHandler());
         handlers.add(new PushCommandHandler());
         handlers.add(new SessionLogHandler());
+        handlers.add(new KaiCommandHandler());
         handlers.add(new HelpCommandHandler());
         handlers.add(new VirtualTableHandler());
     }

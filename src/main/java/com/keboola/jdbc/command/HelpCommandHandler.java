@@ -38,6 +38,11 @@ public class HelpCommandHandler implements KeboolaCommandHandler {
         rows.add(Arrays.asList("Pull", "KEBOOLA PULL QUERY <sql> INTO name", "Run query on Keboola, save results to DuckDB"));
         rows.add(Arrays.asList("Push", "KEBOOLA PUSH TABLE local_table [INTO stage.bucket.table]", "Push DuckDB table to Keboola/Snowflake"));
         rows.add(Arrays.asList("Session", "KEBOOLA SESSION LOG", "Show SQL execution log (dialect analysis)"));
+        rows.add(Arrays.asList("Kai", "KEBOOLA KAI ASK <question>", "Ask Kai AI assistant a question"));
+        rows.add(Arrays.asList("Kai", "KEBOOLA KAI SQL <description>", "Ask Kai to generate SQL for your request"));
+        rows.add(Arrays.asList("Kai", "KEBOOLA KAI HELP <log_id>", "Ask Kai to help fix a query from session log"));
+        rows.add(Arrays.asList("Kai", "KEBOOLA KAI TRANSLATE TO SNOWFLAKE|DUCKDB <sql>", "Translate SQL to target dialect"));
+        rows.add(Arrays.asList("Kai", "KEBOOLA KAI TRANSLATE <log_id>", "Translate session log query to the other dialect"));
         rows.add(Arrays.asList("Virtual table", "SELECT * FROM _keboola.components", "List configured components"));
         rows.add(Arrays.asList("Virtual table", "SELECT * FROM _keboola.events [LIMIT n]", "List recent storage events"));
         rows.add(Arrays.asList("Virtual table", "SELECT * FROM _keboola.jobs [LIMIT n]", "List recent jobs"));

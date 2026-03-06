@@ -64,19 +64,39 @@ public final class VirtualTableRegistry {
         StorageApiClient storage = connection.getStorageClient();
         List<JsonNode> components = storage.listComponents();
 
-        List<String> columns = Arrays.asList("component_id", "component_name", "type", "config_count");
+        List<String> columns = Arrays.asList(
+                "component_id", "component_name", "component_type",
+                "config_id", "config_name", "config_description",
+                "version", "created", "created_by", "is_disabled", "is_deleted"
+        );
         List<List<Object>> rows = new ArrayList<>();
 
         for (JsonNode comp : components) {
-            String id = comp.path("id").asText("");
-            String name = comp.path("name").asText("");
-            String type = comp.path("type").asText("");
-            int configCount = 0;
+            String compId = comp.path("id").asText("");
+            String compName = comp.path("name").asText("");
+            String compType = comp.path("type").asText("");
+
             JsonNode configs = comp.get("configurations");
             if (configs != null && configs.isArray()) {
-                configCount = configs.size();
+                for (JsonNode cfg : configs) {
+                    String configId = cfg.path("id").asText("");
+                    String configName = cfg.path("name").asText("");
+                    String configDesc = cfg.path("description").asText("");
+                    int version = cfg.path("version").asInt(0);
+                    String created = cfg.path("created").asText("");
+                    String createdBy = cfg.path("creatorToken").path("description").asText("");
+                    boolean isDisabled = cfg.path("isDisabled").asBoolean(false);
+                    boolean isDeleted = cfg.path("isDeleted").asBoolean(false);
+
+                    rows.add(Arrays.asList(
+                            compId, compName, compType,
+                            configId, configName, configDesc,
+                            version, created, createdBy,
+                            isDisabled ? "true" : "false",
+                            isDeleted ? "true" : "false"
+                    ));
+                }
             }
-            rows.add(Arrays.asList(id, name, type, configCount));
         }
 
         LOG.debug("_keboola.components: {} rows", rows.size());

@@ -22,7 +22,7 @@ All metadata (databases, schemas, tables, columns) comes from Snowflake SHOW com
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-2.0.1.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-2.0.2.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -77,7 +77,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.0.1.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.0.2.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -94,7 +94,7 @@ The driver exposes Keboola platform metadata as virtual SQL tables in the `_kebo
 
 | Virtual table | Description |
 |---|---|
-| `_keboola.components` | Configured components with config counts |
+| `_keboola.components` | All component configurations with creator, version, and status |
 | `_keboola.events` | Recent storage events (supports `LIMIT`) |
 | `_keboola.jobs` | Recent jobs with status and duration (supports `LIMIT`) |
 | `_keboola.tables` | All tables with row counts and sizes |
@@ -104,8 +104,13 @@ The driver exposes Keboola platform metadata as virtual SQL tables in the `_kebo
 -- See what's available
 KEBOOLA HELP;
 
--- Browse configured components
+-- All component configurations (joinable with jobs via config_id)
 SELECT * FROM _keboola.components;
+
+-- Which configs ran recently?
+SELECT c.component_name, c.config_name, j.status, j.started
+FROM _keboola.components c
+JOIN _keboola.jobs j ON c.component_id = j.component_id AND c.config_id = j.config_id;
 
 -- Last 10 storage events
 SELECT * FROM _keboola.events LIMIT 10;
@@ -290,6 +295,10 @@ src/main/java/com/keboola/jdbc/
 - **David Esner** ([@davidesner](https://github.com/davidesner)) — architect of the Snowflake-native metadata layer (2.0.0). Replaced Storage API metadata with `SHOW` commands via Query Service, `initCatalogAndSchema()`, and server-side `USE DATABASE`/`USE SCHEMA`. See [PR #2](https://github.com/padak/keboola_jdbc/pull/2).
 
 ## Changelog
+
+### 2.0.2
+
+- **Enhanced `_keboola.components`**: Now shows one row per configuration instead of one row per component. Includes `config_id`, `config_name`, `config_description`, `version`, `created`, `created_by`, `is_disabled`, `is_deleted`. Joinable with `_keboola.jobs` via `component_id` + `config_id`.
 
 ### 2.0.1
 

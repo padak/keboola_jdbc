@@ -31,8 +31,15 @@ public final class VirtualTableMetadata {
         map.put("components", Arrays.asList(
                 col("component_id", Types.VARCHAR, "VARCHAR", 255),
                 col("component_name", Types.VARCHAR, "VARCHAR", 255),
-                col("type", Types.VARCHAR, "VARCHAR", 50),
-                col("config_count", Types.INTEGER, "INTEGER", 10)
+                col("component_type", Types.VARCHAR, "VARCHAR", 50),
+                col("config_id", Types.VARCHAR, "VARCHAR", 255),
+                col("config_name", Types.VARCHAR, "VARCHAR", 255),
+                col("config_description", Types.VARCHAR, "VARCHAR", 4096),
+                col("version", Types.INTEGER, "INTEGER", 10),
+                col("created", Types.VARCHAR, "TIMESTAMP", 30),
+                col("created_by", Types.VARCHAR, "VARCHAR", 255),
+                col("is_disabled", Types.VARCHAR, "VARCHAR", 5),
+                col("is_deleted", Types.VARCHAR, "VARCHAR", 5)
         ));
 
         map.put("events", Arrays.asList(

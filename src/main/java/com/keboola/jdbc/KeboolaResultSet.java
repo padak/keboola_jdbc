@@ -66,6 +66,9 @@ public class KeboolaResultSet implements ResultSet {
     /** Whether there are more pages to fetch from the server. */
     private boolean hasMorePages = true;
 
+    /** The first page of results, retained for backendContext access. */
+    private final QueryResult firstPageResult;
+
     private boolean closed = false;
 
     /**
@@ -86,8 +89,14 @@ public class KeboolaResultSet implements ResultSet {
         this.columns = firstPage.getColumns();
         this.currentPage = firstPage.getData();
         this.hasMorePages = firstPage.isHasMorePages();
+        this.firstPageResult = firstPage;
         LOG.debug("KeboolaResultSet created: statementId={}, columns={}, firstPageRows={}",
                 statementId, columns.size(), currentPage.size());
+    }
+
+    /** Returns the first page result, used to read backendContext. */
+    QueryResult getFirstPageResult() {
+        return firstPageResult;
     }
 
     // -------------------------------------------------------------------------

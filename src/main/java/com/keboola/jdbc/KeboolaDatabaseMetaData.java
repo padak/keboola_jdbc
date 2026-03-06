@@ -1,41 +1,31 @@
 package com.keboola.jdbc;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.keboola.jdbc.command.VirtualTableMetadata;
 import com.keboola.jdbc.config.DriverConfig;
-import com.keboola.jdbc.http.StorageApiClient;
-import com.keboola.jdbc.http.model.Bucket;
-import com.keboola.jdbc.http.model.ColumnMetadata;
-import com.keboola.jdbc.http.model.TableInfo;
-import com.keboola.jdbc.http.model.TokenInfo;
-import com.keboola.jdbc.meta.SchemaCache;
 import com.keboola.jdbc.meta.TypeMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * DatabaseMetaData implementation for Keboola.
- * Maps Keboola Storage structure to JDBC metadata:
- * - Catalog = Project (from token owner)
- * - Schema = Bucket (e.g. "in.c-main")
- * - Table = Table within a bucket
- * - Columns = Table columns with type info from KBC.datatype.* metadata
+ * Proxies database object listing to the underlying Snowflake database using SHOW commands
+ * with LIKE clauses, IN scoping, and client-side regex pattern filtering.
+ * Also exposes virtual _keboola.* tables for Keboola platform metadata.
  */
 public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
     private static final Logger LOG = LoggerFactory.getLogger(KeboolaDatabaseMetaData.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final KeboolaConnection connection;
-    private final TokenInfo tokenInfo;
-    private final SchemaCache schemaCache;
 
-    public KeboolaDatabaseMetaData(KeboolaConnection connection, StorageApiClient storageClient, TokenInfo tokenInfo) {
+    public KeboolaDatabaseMetaData(KeboolaConnection connection) {
         this.connection = connection;
-        this.tokenInfo = tokenInfo;
-        this.schemaCache = new SchemaCache(storageClient);
     }
 
     // -- Database identification --
@@ -97,8 +87,16 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         LOG.debug("getCatalogs()");
         List<String> columns = Collections.singletonList("TABLE_CAT");
         List<List<Object>> rows = new ArrayList<>();
-        String projectName = tokenInfo.getOwner() != null ? tokenInfo.getOwner().getName() : "Keboola";
-        rows.add(Collections.singletonList(projectName));
+
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW DATABASES")) {
+            int nameIdx = findColumnIndex(rs, "name");
+            while (rs.next()) {
+                rows.add(Collections.singletonList(rs.getString(nameIdx)));
+            }
+        }
+
+        rows.sort(Comparator.comparing(r -> (String) r.get(0)));
         return new ArrayResultSet(columns, rows);
     }
 
@@ -111,22 +109,44 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     public ResultSet getSchemas(String catalog, String schemaPattern) throws SQLException {
         LOG.debug("getSchemas(catalog={}, schemaPattern={})", catalog, schemaPattern);
         List<String> columns = Arrays.asList("TABLE_SCHEM", "TABLE_CATALOG");
-        List<List<Object>> rows = new ArrayList<>();
-        String projectName = tokenInfo.getOwner() != null ? tokenInfo.getOwner().getName() : "Keboola";
 
-        // Add virtual _keboola schema
-        if (matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
-            rows.add(Arrays.asList(VirtualTableMetadata.SCHEMA_NAME, projectName));
+        if ("".equals(catalog)) {
+            return new ArrayResultSet(columns, Collections.emptyList());
         }
 
-        for (Bucket bucket : schemaCache.getBuckets()) {
-            if (matchesPattern(bucket.getId(), schemaPattern)) {
-                rows.add(Arrays.asList(bucket.getId(), projectName));
+        List<List<Object>> rows = new ArrayList<>();
+
+        // Add virtual _keboola schema
+        String currentCatalog = connection.getCatalog();
+        if (matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
+            String vtCatalog = currentCatalog != null ? currentCatalog : "Keboola";
+            if (catalog == null || matchesPattern(vtCatalog, catalog)) {
+                rows.add(Arrays.asList(VirtualTableMetadata.SCHEMA_NAME, vtCatalog));
             }
         }
 
-        // Sort by schema name
-        rows.sort(Comparator.comparing(r -> (String) r.get(0)));
+        // Real schemas from Snowflake via SHOW SCHEMAS
+        StringBuilder sql = new StringBuilder("SHOW SCHEMAS");
+        if (schemaPattern != null && !schemaPattern.isEmpty() && !schemaPattern.equals("%")) {
+            sql.append(" LIKE '").append(escapeSingleQuoteForLike(schemaPattern)).append("'");
+        }
+        sql.append(buildCatalogInClause(catalog));
+
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery(sql.toString())) {
+            int nameIdx = findColumnIndex(rs, "name");
+            int dbIdx = findColumnIndex(rs, "database_name");
+            while (rs.next()) {
+                String schemaName = rs.getString(nameIdx);
+                String dbName = rs.getString(dbIdx);
+                if (matchesPattern(dbName, catalog)) {
+                    rows.add(Arrays.asList(schemaName, dbName));
+                }
+            }
+        }
+
+        rows.sort(Comparator.<List<Object>, String>comparing(r -> (String) r.get(1))
+                .thenComparing(r -> (String) r.get(0)));
         return new ArrayResultSet(columns, rows);
     }
 
@@ -134,62 +154,42 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     public ResultSet getTables(String catalog, String schemaPattern, String tableNamePattern, String[] types) throws SQLException {
         LOG.debug("getTables(catalog={}, schema={}, table={}, types={})", catalog, schemaPattern, tableNamePattern, types != null ? Arrays.toString(types) : "null");
 
-        // Determine which types to include
-        boolean includeTable = true;
-        boolean includeVirtual = true;
-        if (types != null) {
-            includeTable = false;
-            includeVirtual = false;
-            for (String type : types) {
-                if ("TABLE".equalsIgnoreCase(type)) {
-                    includeTable = true;
-                }
-                if ("VIRTUAL TABLE".equalsIgnoreCase(type)) {
-                    includeVirtual = true;
-                }
-            }
-            if (!includeTable && !includeVirtual) {
-                return emptyTableResultSet();
-            }
-        }
-
         List<String> columns = Arrays.asList(
                 "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
                 "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"
         );
-        List<List<Object>> rows = new ArrayList<>();
-        String projectName = tokenInfo.getOwner() != null ? tokenInfo.getOwner().getName() : "Keboola";
 
-        // Add virtual _keboola tables
-        if (includeVirtual && matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
-            for (String vtName : VirtualTableMetadata.getTableNames()) {
-                if (matchesPattern(vtName, tableNamePattern)) {
-                    rows.add(Arrays.asList(
-                            projectName,                          // TABLE_CAT
-                            VirtualTableMetadata.SCHEMA_NAME,     // TABLE_SCHEM
-                            vtName,                               // TABLE_NAME
-                            "VIRTUAL TABLE",                      // TABLE_TYPE
-                            "Keboola platform metadata",          // REMARKS
-                            null, null, null, null, null
-                    ));
-                }
+        if ("".equals(catalog) || "".equals(schemaPattern)) {
+            return new ArrayResultSet(columns, Collections.emptyList());
+        }
+
+        Set<String> typeSet = null;
+        if (types != null) {
+            typeSet = new HashSet<>();
+            for (String t : types) {
+                typeSet.add(t.toUpperCase());
             }
         }
 
-        // Add real Storage API tables
-        if (includeTable) {
-            for (Bucket bucket : schemaCache.getBuckets()) {
-                if (!matchesPattern(bucket.getId(), schemaPattern)) {
-                    continue;
-                }
-                for (TableInfo table : schemaCache.getTables(bucket.getId())) {
-                    if (matchesPattern(table.getName(), tableNamePattern)) {
+        boolean wantTables = typeSet == null || typeSet.contains("TABLE") || typeSet.contains("BASE TABLE");
+        boolean wantViews = typeSet == null || typeSet.contains("VIEW");
+        boolean wantVirtual = typeSet == null || typeSet.contains("VIRTUAL TABLE");
+
+        List<List<Object>> rows = new ArrayList<>();
+
+        // Add virtual _keboola tables
+        if (wantVirtual && matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
+            String currentCatalog = connection.getCatalog();
+            String vtCatalog = currentCatalog != null ? currentCatalog : "Keboola";
+            if (catalog == null || matchesPattern(vtCatalog, catalog)) {
+                for (String vtName : VirtualTableMetadata.getTableNames()) {
+                    if (matchesPattern(vtName, tableNamePattern)) {
                         rows.add(Arrays.asList(
-                                projectName,           // TABLE_CAT
-                                bucket.getId(),         // TABLE_SCHEM
-                                table.getName(),        // TABLE_NAME
-                                "TABLE",                // TABLE_TYPE
-                                "",                     // REMARKS
+                                vtCatalog,
+                                VirtualTableMetadata.SCHEMA_NAME,
+                                vtName,
+                                "VIRTUAL TABLE",
+                                "Keboola platform metadata",
                                 null, null, null, null, null
                         ));
                     }
@@ -197,12 +197,63 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
             }
         }
 
-        rows.sort((a, b) -> {
-            int cmp = ((String) a.get(1)).compareTo((String) b.get(1));
-            if (cmp != 0) return cmp;
-            return ((String) a.get(2)).compareTo((String) b.get(2));
-        });
+        // Real tables/views from Snowflake (skip if schema is exclusively _keboola)
+        boolean schemaIsOnlyVirtual = VirtualTableMetadata.SCHEMA_NAME.equalsIgnoreCase(schemaPattern);
+        if ((wantTables || wantViews) && !schemaIsOnlyVirtual) {
+            String showCommand;
+            if (wantTables && wantViews) {
+                showCommand = "SHOW OBJECTS";
+            } else if (wantViews) {
+                showCommand = "SHOW VIEWS";
+            } else {
+                showCommand = "SHOW TABLES";
+            }
 
+            StringBuilder sql = new StringBuilder(showCommand);
+            if (tableNamePattern != null && !tableNamePattern.isEmpty() && !tableNamePattern.equals("%")) {
+                sql.append(" LIKE '").append(escapeSingleQuoteForLike(tableNamePattern)).append("'");
+            }
+            sql.append(buildScopeInClause(catalog, schemaPattern));
+
+            try (Statement stmt = connection.createStatement();
+                 ResultSet rs = stmt.executeQuery(sql.toString())) {
+                int nameIdx = findColumnIndex(rs, "name");
+                int schemaIdx = findColumnIndex(rs, "schema_name");
+                int dbIdx = findColumnIndex(rs, "database_name");
+                int kindIdx = findColumnIndex(rs, "kind");
+                while (rs.next()) {
+                    String schemaName = rs.getString(schemaIdx);
+                    String dbName = rs.getString(dbIdx);
+                    String kind = rs.getString(kindIdx);
+
+                    if (!matchesPattern(schemaName, schemaPattern)) continue;
+                    if (!matchesPattern(dbName, catalog)) continue;
+
+                    String tableType = "TABLE";
+                    if ("VIEW".equalsIgnoreCase(kind)) {
+                        tableType = "VIEW";
+                    }
+
+                    if (typeSet != null && !typeSet.contains(tableType) && !typeSet.contains("BASE TABLE")) {
+                        continue;
+                    }
+
+                    rows.add(Arrays.asList(
+                            dbName,
+                            schemaName,
+                            rs.getString(nameIdx),
+                            tableType,
+                            "",
+                            null, null, null, null, null
+                    ));
+                }
+            }
+        }
+
+        rows.sort(Comparator.<List<Object>, String>comparing(r -> (String) r.get(3))  // TABLE_TYPE
+                .thenComparing(r -> (String) r.get(0))   // TABLE_CAT
+                .thenComparing(r -> (String) r.get(1))   // TABLE_SCHEM
+                .thenComparing(r -> (String) r.get(2)));  // TABLE_NAME
         return new ArrayResultSet(columns, rows);
     }
 
@@ -218,135 +269,129 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                 "ORDINAL_POSITION", "IS_NULLABLE", "SCOPE_CATALOG", "SCOPE_SCHEMA",
                 "SCOPE_TABLE", "SOURCE_DATA_TYPE", "IS_AUTOINCREMENT", "IS_GENERATEDCOLUMN"
         );
+
+        if ("".equals(catalog) || "".equals(schemaPattern)) {
+            return new ArrayResultSet(columns, Collections.emptyList());
+        }
+
         List<List<Object>> rows = new ArrayList<>();
-        String projectName = tokenInfo.getOwner() != null ? tokenInfo.getOwner().getName() : "Keboola";
 
         // Add columns for virtual _keboola tables
         if (matchesPattern(VirtualTableMetadata.SCHEMA_NAME, schemaPattern)) {
-            for (String vtName : VirtualTableMetadata.getTableNames()) {
-                if (!matchesPattern(vtName, tableNamePattern)) {
-                    continue;
-                }
-                List<Object[]> vtCols = VirtualTableMetadata.getColumns(vtName);
-                if (vtCols == null) continue;
-                int vtOrdinal = 1;
-                for (Object[] colDef : vtCols) {
-                    String colName = (String) colDef[0];
-                    if (!matchesPattern(colName, columnNamePattern)) {
-                        vtOrdinal++;
-                        continue;
-                    }
-                    int jdbcType = (int) colDef[1];
-                    String typeName = (String) colDef[2];
-                    int displaySize = (int) colDef[3];
-
-                    rows.add(Arrays.asList(
-                            projectName,                          // TABLE_CAT
-                            VirtualTableMetadata.SCHEMA_NAME,     // TABLE_SCHEM
-                            vtName,                               // TABLE_NAME
-                            colName,                              // COLUMN_NAME
-                            jdbcType,                             // DATA_TYPE
-                            typeName,                             // TYPE_NAME
-                            displaySize,                          // COLUMN_SIZE
-                            null,                                 // BUFFER_LENGTH
-                            0,                                    // DECIMAL_DIGITS
-                            10,                                   // NUM_PREC_RADIX
-                            columnNullable,                       // NULLABLE
-                            "",                                   // REMARKS
-                            null,                                 // COLUMN_DEF
-                            0,                                    // SQL_DATA_TYPE
-                            0,                                    // SQL_DATETIME_SUB
-                            displaySize,                          // CHAR_OCTET_LENGTH
-                            vtOrdinal,                            // ORDINAL_POSITION
-                            "YES",                                // IS_NULLABLE
-                            null, null, null, null,               // SCOPE_*
-                            "NO",                                 // IS_AUTOINCREMENT
-                            "NO"                                  // IS_GENERATEDCOLUMN
-                    ));
-                    vtOrdinal++;
-                }
-            }
-        }
-
-        // Add columns for real Storage API tables
-        for (Bucket bucket : schemaCache.getBuckets()) {
-            if (!matchesPattern(bucket.getId(), schemaPattern)) {
-                continue;
-            }
-            for (TableInfo table : schemaCache.getTables(bucket.getId())) {
-                if (!matchesPattern(table.getName(), tableNamePattern)) {
-                    continue;
-                }
-                if (table.getColumns() == null) {
-                    continue;
-                }
-                int ordinal = 1;
-                for (com.keboola.jdbc.http.model.ColumnInfo col : table.getColumns()) {
-                    String colName = col.getName();
-                    if (!matchesPattern(colName, columnNamePattern)) {
-                        ordinal++;
-                        continue;
-                    }
-
-                    // Extract type metadata from columnMetadata
-                    String dataType = "VARCHAR";
-                    boolean nullable = true;
-                    Integer length = null;
-
-                    Map<String, List<ColumnMetadata>> colMeta = table.getColumnMetadata();
-                    if (colMeta != null && colMeta.containsKey(colName)) {
-                        for (ColumnMetadata meta : colMeta.get(colName)) {
-                            switch (meta.getKey()) {
-                                case "KBC.datatype.type":
-                                    dataType = meta.getValue();
-                                    break;
-                                case "KBC.datatype.nullable":
-                                    nullable = "1".equals(meta.getValue()) || "true".equalsIgnoreCase(meta.getValue());
-                                    break;
-                                case "KBC.datatype.length":
-                                    try {
-                                        length = Integer.parseInt(meta.getValue());
-                                    } catch (NumberFormatException ignored) {
-                                        // Keep null
-                                    }
-                                    break;
-                            }
+            String currentCatalog = connection.getCatalog();
+            String vtCatalog = currentCatalog != null ? currentCatalog : "Keboola";
+            if (catalog == null || matchesPattern(vtCatalog, catalog)) {
+                for (String vtName : VirtualTableMetadata.getTableNames()) {
+                    if (!matchesPattern(vtName, tableNamePattern)) continue;
+                    List<Object[]> vtCols = VirtualTableMetadata.getColumns(vtName);
+                    if (vtCols == null) continue;
+                    int vtOrdinal = 1;
+                    for (Object[] colDef : vtCols) {
+                        String colName = (String) colDef[0];
+                        if (!matchesPattern(colName, columnNamePattern)) {
+                            vtOrdinal++;
+                            continue;
                         }
+                        int jdbcType = (int) colDef[1];
+                        String typeName = (String) colDef[2];
+                        int displaySize = (int) colDef[3];
+
+                        rows.add(Arrays.asList(
+                                vtCatalog, VirtualTableMetadata.SCHEMA_NAME, vtName, colName,
+                                jdbcType, typeName, displaySize, null,
+                                0, 10, columnNullable, "",
+                                null, 0, 0, displaySize,
+                                vtOrdinal, "YES", null, null, null, null, "NO", "NO"
+                        ));
+                        vtOrdinal++;
                     }
-
-                    int jdbcType = TypeMapper.toJdbcType(dataType);
-                    String typeName = TypeMapper.toJdbcTypeName(dataType);
-                    int displaySize = TypeMapper.getDisplaySize(dataType, length);
-                    int precision = TypeMapper.getPrecision(dataType, length);
-                    int scale = TypeMapper.getScale(dataType);
-
-                    rows.add(Arrays.asList(
-                            projectName,                        // TABLE_CAT
-                            bucket.getId(),                     // TABLE_SCHEM
-                            table.getName(),                    // TABLE_NAME
-                            colName,                            // COLUMN_NAME
-                            jdbcType,                           // DATA_TYPE
-                            typeName,                           // TYPE_NAME
-                            displaySize,                        // COLUMN_SIZE
-                            null,                               // BUFFER_LENGTH
-                            scale,                              // DECIMAL_DIGITS
-                            10,                                 // NUM_PREC_RADIX
-                            nullable ? columnNullable : columnNoNulls, // NULLABLE
-                            "",                                 // REMARKS
-                            null,                               // COLUMN_DEF
-                            0,                                  // SQL_DATA_TYPE
-                            0,                                  // SQL_DATETIME_SUB
-                            displaySize,                        // CHAR_OCTET_LENGTH
-                            ordinal,                            // ORDINAL_POSITION
-                            nullable ? "YES" : "NO",            // IS_NULLABLE
-                            null, null, null, null,             // SCOPE_*
-                            "NO",                               // IS_AUTOINCREMENT
-                            "NO"                                // IS_GENERATEDCOLUMN
-                    ));
-                    ordinal++;
                 }
             }
         }
+
+        // Real columns from Snowflake via SHOW COLUMNS (skip if schema is exclusively _keboola)
+        boolean schemaIsOnlyVirtual = VirtualTableMetadata.SCHEMA_NAME.equalsIgnoreCase(schemaPattern);
+        if (!schemaIsOnlyVirtual) {
+        StringBuilder sql = new StringBuilder("SHOW COLUMNS");
+        if (columnNamePattern != null && !columnNamePattern.isEmpty() && !columnNamePattern.equals("%")) {
+            sql.append(" LIKE '").append(escapeSingleQuoteForLike(columnNamePattern)).append("'");
+        }
+        sql.append(buildColumnsInClause(catalog, schemaPattern, tableNamePattern));
+
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery(sql.toString())) {
+            int dbIdx = findColumnIndex(rs, "database_name");
+            int schemaIdx = findColumnIndex(rs, "schema_name");
+            int tableIdx = findColumnIndex(rs, "table_name");
+            int colNameIdx = findColumnIndex(rs, "column_name");
+            int dataTypeIdx = findColumnIndex(rs, "data_type");
+
+            String lastTableKey = null;
+            int ordinal = 0;
+
+            while (rs.next()) {
+                String dbName = rs.getString(dbIdx);
+                String schemaName = rs.getString(schemaIdx);
+                String tableName = rs.getString(tableIdx);
+                String colName = rs.getString(colNameIdx);
+                String dataTypeJson = rs.getString(dataTypeIdx);
+
+                if (!matchesPattern(schemaName, schemaPattern)) continue;
+                if (!matchesPattern(tableName, tableNamePattern)) continue;
+                if (!matchesPattern(dbName, catalog)) continue;
+
+                String tableKey = dbName + "." + schemaName + "." + tableName;
+                if (!tableKey.equals(lastTableKey)) {
+                    ordinal = 0;
+                    lastTableKey = tableKey;
+                }
+                ordinal++;
+
+                String sfType = "VARCHAR";
+                int precision = 0;
+                int scale = 0;
+                int length = 0;
+                boolean nullable = true;
+
+                try {
+                    JsonNode node = OBJECT_MAPPER.readTree(dataTypeJson);
+                    sfType = node.has("type") ? node.get("type").asText("VARCHAR") : "VARCHAR";
+                    precision = node.has("precision") ? node.get("precision").asInt(0) : 0;
+                    scale = node.has("scale") ? node.get("scale").asInt(0) : 0;
+                    length = node.has("length") ? node.get("length").asInt(0) : 0;
+                    nullable = !node.has("nullable") || node.get("nullable").asBoolean(true);
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse data_type JSON for column {}.{}.{}.{}: {}",
+                            dbName, schemaName, tableName, colName, e.getMessage());
+                }
+
+                int jdbcType = TypeMapper.toJdbcType(sfType);
+                String typeName = TypeMapper.toJdbcTypeName(sfType);
+
+                int columnSize;
+                int decimalDigits;
+                if (precision > 0) {
+                    columnSize = precision;
+                    decimalDigits = scale;
+                } else if (length > 0) {
+                    columnSize = length;
+                    decimalDigits = 0;
+                } else {
+                    columnSize = TypeMapper.getDisplaySize(sfType, null);
+                    decimalDigits = TypeMapper.getScale(sfType);
+                }
+
+                rows.add(Arrays.asList(
+                        dbName, schemaName, tableName, colName,
+                        jdbcType, typeName, columnSize, null,
+                        decimalDigits, 10, nullable ? columnNullable : columnNoNulls, "",
+                        null, 0, 0, columnSize,
+                        ordinal, nullable ? "YES" : "NO",
+                        null, null, null, null, "NO", "NO"
+                ));
+            }
+        }
+        } // end if !schemaIsOnlyVirtual
 
         return new ArrayResultSet(columns, rows);
     }
@@ -356,6 +401,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         List<String> columns = Collections.singletonList("TABLE_TYPE");
         List<List<Object>> rows = new ArrayList<>();
         rows.add(Collections.singletonList("TABLE"));
+        rows.add(Collections.singletonList("VIEW"));
         rows.add(Collections.singletonList("VIRTUAL TABLE"));
         return new ArrayResultSet(columns, rows);
     }
@@ -432,44 +478,28 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     // -- SQL support info --
 
     @Override
-    public String getIdentifierQuoteString() {
-        return "\"";
-    }
+    public String getIdentifierQuoteString() { return "\""; }
 
     @Override
-    public String getCatalogSeparator() {
-        return ".";
-    }
+    public String getCatalogSeparator() { return "."; }
 
     @Override
-    public String getCatalogTerm() {
-        return "project";
-    }
+    public String getCatalogTerm() { return "database"; }
 
     @Override
-    public String getSchemaTerm() {
-        return "bucket";
-    }
+    public String getSchemaTerm() { return "schema"; }
 
     @Override
-    public String getProcedureTerm() {
-        return "procedure";
-    }
+    public String getProcedureTerm() { return "procedure"; }
 
     @Override
-    public String getSearchStringEscape() {
-        return "\\";
-    }
+    public String getSearchStringEscape() { return "\\"; }
 
     @Override
-    public String getExtraNameCharacters() {
-        return "";
-    }
+    public String getExtraNameCharacters() { return ""; }
 
     @Override
-    public String getSQLKeywords() {
-        return "";
-    }
+    public String getSQLKeywords() { return ""; }
 
     @Override
     public String getNumericFunctions() {
@@ -493,197 +523,70 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
     // -- Capabilities --
 
-    @Override
-    public boolean supportsAlterTableWithAddColumn() { return false; }
-
-    @Override
-    public boolean supportsAlterTableWithDropColumn() { return false; }
-
-    @Override
-    public boolean supportsColumnAliasing() { return true; }
-
-    @Override
-    public boolean supportsGroupBy() { return true; }
-
-    @Override
-    public boolean supportsGroupByUnrelated() { return true; }
-
-    @Override
-    public boolean supportsGroupByBeyondSelect() { return true; }
-
-    @Override
-    public boolean supportsOrderByUnrelated() { return true; }
-
-    @Override
-    public boolean supportsSelectForUpdate() { return false; }
-
-    @Override
-    public boolean supportsSubqueriesInComparisons() { return true; }
-
-    @Override
-    public boolean supportsSubqueriesInExists() { return true; }
-
-    @Override
-    public boolean supportsSubqueriesInIns() { return true; }
-
-    @Override
-    public boolean supportsSubqueriesInQuantifieds() { return true; }
-
-    @Override
-    public boolean supportsCorrelatedSubqueries() { return true; }
-
-    @Override
-    public boolean supportsUnion() { return true; }
-
-    @Override
-    public boolean supportsUnionAll() { return true; }
-
-    @Override
-    public boolean supportsOuterJoins() { return true; }
-
-    @Override
-    public boolean supportsFullOuterJoins() { return true; }
-
-    @Override
-    public boolean supportsLimitedOuterJoins() { return true; }
-
-    @Override
-    public boolean supportsExpressionsInOrderBy() { return true; }
-
-    @Override
-    public boolean supportsLikeEscapeClause() { return true; }
-
-    @Override
-    public boolean supportsMultipleResultSets() { return false; }
-
-    @Override
-    public boolean supportsMultipleTransactions() { return false; }
-
-    @Override
-    public boolean supportsNonNullableColumns() { return true; }
-
-    @Override
-    public boolean supportsMinimumSQLGrammar() { return true; }
-
-    @Override
-    public boolean supportsCoreSQLGrammar() { return true; }
-
-    @Override
-    public boolean supportsExtendedSQLGrammar() { return false; }
-
-    @Override
-    public boolean supportsANSI92EntryLevelSQL() { return true; }
-
-    @Override
-    public boolean supportsANSI92IntermediateSQL() { return false; }
-
-    @Override
-    public boolean supportsANSI92FullSQL() { return false; }
-
-    @Override
-    public boolean supportsIntegrityEnhancementFacility() { return false; }
-
-    @Override
-    public boolean supportsMixedCaseIdentifiers() { return false; }
-
-    @Override
-    public boolean storesUpperCaseIdentifiers() { return true; }
-
-    @Override
-    public boolean storesLowerCaseIdentifiers() { return false; }
-
-    @Override
-    public boolean storesMixedCaseIdentifiers() { return false; }
-
-    @Override
-    public boolean supportsMixedCaseQuotedIdentifiers() { return true; }
-
-    @Override
-    public boolean storesUpperCaseQuotedIdentifiers() { return false; }
-
-    @Override
-    public boolean storesLowerCaseQuotedIdentifiers() { return false; }
-
-    @Override
-    public boolean storesMixedCaseQuotedIdentifiers() { return true; }
-
-    @Override
-    public boolean supportsTableCorrelationNames() { return true; }
-
-    @Override
-    public boolean supportsDifferentTableCorrelationNames() { return false; }
-
-    @Override
-    public boolean supportsTransactions() { return false; }
-
-    @Override
-    public boolean supportsTransactionIsolationLevel(int level) { return false; }
-
-    @Override
-    public boolean supportsDataDefinitionAndDataManipulationTransactions() { return false; }
-
-    @Override
-    public boolean supportsDataManipulationTransactionsOnly() { return false; }
-
-    @Override
-    public boolean dataDefinitionCausesTransactionCommit() { return false; }
-
-    @Override
-    public boolean dataDefinitionIgnoredInTransactions() { return false; }
-
-    @Override
-    public boolean supportsSchemasInDataManipulation() { return true; }
-
-    @Override
-    public boolean supportsSchemasInProcedureCalls() { return false; }
-
-    @Override
-    public boolean supportsSchemasInTableDefinitions() { return true; }
-
-    @Override
-    public boolean supportsSchemasInIndexDefinitions() { return false; }
-
-    @Override
-    public boolean supportsSchemasInPrivilegeDefinitions() { return false; }
-
-    @Override
-    public boolean supportsCatalogsInDataManipulation() { return false; }
-
-    @Override
-    public boolean supportsCatalogsInProcedureCalls() { return false; }
-
-    @Override
-    public boolean supportsCatalogsInTableDefinitions() { return false; }
-
-    @Override
-    public boolean supportsCatalogsInIndexDefinitions() { return false; }
-
-    @Override
-    public boolean supportsCatalogsInPrivilegeDefinitions() { return false; }
-
-    @Override
-    public boolean supportsPositionedDelete() { return false; }
-
-    @Override
-    public boolean supportsPositionedUpdate() { return false; }
-
-    @Override
-    public boolean supportsStoredProcedures() { return false; }
-
-    @Override
-    public boolean supportsBatchUpdates() { return true; }
-
-    @Override
-    public boolean supportsSavepoints() { return false; }
-
-    @Override
-    public boolean supportsNamedParameters() { return false; }
-
-    @Override
-    public boolean supportsMultipleOpenResults() { return false; }
-
-    @Override
-    public boolean supportsGetGeneratedKeys() { return false; }
+    @Override public boolean supportsAlterTableWithAddColumn() { return false; }
+    @Override public boolean supportsAlterTableWithDropColumn() { return false; }
+    @Override public boolean supportsColumnAliasing() { return true; }
+    @Override public boolean supportsGroupBy() { return true; }
+    @Override public boolean supportsGroupByUnrelated() { return true; }
+    @Override public boolean supportsGroupByBeyondSelect() { return true; }
+    @Override public boolean supportsOrderByUnrelated() { return true; }
+    @Override public boolean supportsSelectForUpdate() { return false; }
+    @Override public boolean supportsSubqueriesInComparisons() { return true; }
+    @Override public boolean supportsSubqueriesInExists() { return true; }
+    @Override public boolean supportsSubqueriesInIns() { return true; }
+    @Override public boolean supportsSubqueriesInQuantifieds() { return true; }
+    @Override public boolean supportsCorrelatedSubqueries() { return true; }
+    @Override public boolean supportsUnion() { return true; }
+    @Override public boolean supportsUnionAll() { return true; }
+    @Override public boolean supportsOuterJoins() { return true; }
+    @Override public boolean supportsFullOuterJoins() { return true; }
+    @Override public boolean supportsLimitedOuterJoins() { return true; }
+    @Override public boolean supportsExpressionsInOrderBy() { return true; }
+    @Override public boolean supportsLikeEscapeClause() { return true; }
+    @Override public boolean supportsMultipleResultSets() { return false; }
+    @Override public boolean supportsMultipleTransactions() { return false; }
+    @Override public boolean supportsNonNullableColumns() { return true; }
+    @Override public boolean supportsMinimumSQLGrammar() { return true; }
+    @Override public boolean supportsCoreSQLGrammar() { return true; }
+    @Override public boolean supportsExtendedSQLGrammar() { return false; }
+    @Override public boolean supportsANSI92EntryLevelSQL() { return true; }
+    @Override public boolean supportsANSI92IntermediateSQL() { return false; }
+    @Override public boolean supportsANSI92FullSQL() { return false; }
+    @Override public boolean supportsIntegrityEnhancementFacility() { return false; }
+    @Override public boolean supportsMixedCaseIdentifiers() { return false; }
+    @Override public boolean storesUpperCaseIdentifiers() { return true; }
+    @Override public boolean storesLowerCaseIdentifiers() { return false; }
+    @Override public boolean storesMixedCaseIdentifiers() { return false; }
+    @Override public boolean supportsMixedCaseQuotedIdentifiers() { return true; }
+    @Override public boolean storesUpperCaseQuotedIdentifiers() { return false; }
+    @Override public boolean storesLowerCaseQuotedIdentifiers() { return false; }
+    @Override public boolean storesMixedCaseQuotedIdentifiers() { return true; }
+    @Override public boolean supportsTableCorrelationNames() { return true; }
+    @Override public boolean supportsDifferentTableCorrelationNames() { return false; }
+    @Override public boolean supportsTransactions() { return false; }
+    @Override public boolean supportsTransactionIsolationLevel(int level) { return false; }
+    @Override public boolean supportsDataDefinitionAndDataManipulationTransactions() { return false; }
+    @Override public boolean supportsDataManipulationTransactionsOnly() { return false; }
+    @Override public boolean dataDefinitionCausesTransactionCommit() { return false; }
+    @Override public boolean dataDefinitionIgnoredInTransactions() { return false; }
+    @Override public boolean supportsSchemasInDataManipulation() { return true; }
+    @Override public boolean supportsSchemasInProcedureCalls() { return false; }
+    @Override public boolean supportsSchemasInTableDefinitions() { return true; }
+    @Override public boolean supportsSchemasInIndexDefinitions() { return false; }
+    @Override public boolean supportsSchemasInPrivilegeDefinitions() { return false; }
+    @Override public boolean supportsCatalogsInDataManipulation() { return true; }
+    @Override public boolean supportsCatalogsInProcedureCalls() { return false; }
+    @Override public boolean supportsCatalogsInTableDefinitions() { return true; }
+    @Override public boolean supportsCatalogsInIndexDefinitions() { return false; }
+    @Override public boolean supportsCatalogsInPrivilegeDefinitions() { return false; }
+    @Override public boolean supportsPositionedDelete() { return false; }
+    @Override public boolean supportsPositionedUpdate() { return false; }
+    @Override public boolean supportsStoredProcedures() { return false; }
+    @Override public boolean supportsBatchUpdates() { return true; }
+    @Override public boolean supportsSavepoints() { return false; }
+    @Override public boolean supportsNamedParameters() { return false; }
+    @Override public boolean supportsMultipleOpenResults() { return false; }
+    @Override public boolean supportsGetGeneratedKeys() { return false; }
 
     @Override
     public boolean supportsResultSetType(int type) {
@@ -695,88 +598,36 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         return type == ResultSet.TYPE_FORWARD_ONLY && concurrency == ResultSet.CONCUR_READ_ONLY;
     }
 
-    @Override
-    public boolean supportsResultSetHoldability(int holdability) { return false; }
-
-    @Override
-    public int getResultSetHoldability() { return ResultSet.CLOSE_CURSORS_AT_COMMIT; }
-
-    @Override
-    public boolean supportsStatementPooling() { return false; }
-
-    @Override
-    public boolean supportsStoredFunctionsUsingCallSyntax() { return false; }
-
-    @Override
-    public boolean autoCommitFailureClosesAllResultSets() { return false; }
-
-    @Override
-    public boolean generatedKeyAlwaysReturned() { return false; }
+    @Override public boolean supportsResultSetHoldability(int holdability) { return false; }
+    @Override public int getResultSetHoldability() { return ResultSet.CLOSE_CURSORS_AT_COMMIT; }
+    @Override public boolean supportsStatementPooling() { return false; }
+    @Override public boolean supportsStoredFunctionsUsingCallSyntax() { return false; }
+    @Override public boolean autoCommitFailureClosesAllResultSets() { return false; }
+    @Override public boolean generatedKeyAlwaysReturned() { return false; }
 
     // -- Limits --
 
-    @Override
-    public int getMaxBinaryLiteralLength() { return 0; }
-
-    @Override
-    public int getMaxCharLiteralLength() { return 0; }
-
-    @Override
-    public int getMaxColumnNameLength() { return 255; }
-
-    @Override
-    public int getMaxColumnsInGroupBy() { return 0; }
-
-    @Override
-    public int getMaxColumnsInIndex() { return 0; }
-
-    @Override
-    public int getMaxColumnsInOrderBy() { return 0; }
-
-    @Override
-    public int getMaxColumnsInSelect() { return 0; }
-
-    @Override
-    public int getMaxColumnsInTable() { return 0; }
-
-    @Override
-    public int getMaxConnections() { return 0; }
-
-    @Override
-    public int getMaxCursorNameLength() { return 0; }
-
-    @Override
-    public int getMaxIndexLength() { return 0; }
-
-    @Override
-    public int getMaxSchemaNameLength() { return 255; }
-
-    @Override
-    public int getMaxProcedureNameLength() { return 0; }
-
-    @Override
-    public int getMaxCatalogNameLength() { return 255; }
-
-    @Override
-    public int getMaxRowSize() { return 0; }
-
-    @Override
-    public boolean doesMaxRowSizeIncludeBlobs() { return false; }
-
-    @Override
-    public int getMaxStatementLength() { return 0; }
-
-    @Override
-    public int getMaxStatements() { return 0; }
-
-    @Override
-    public int getMaxTableNameLength() { return 255; }
-
-    @Override
-    public int getMaxTablesInSelect() { return 0; }
-
-    @Override
-    public int getMaxUserNameLength() { return 0; }
+    @Override public int getMaxBinaryLiteralLength() { return 0; }
+    @Override public int getMaxCharLiteralLength() { return 0; }
+    @Override public int getMaxColumnNameLength() { return 255; }
+    @Override public int getMaxColumnsInGroupBy() { return 0; }
+    @Override public int getMaxColumnsInIndex() { return 0; }
+    @Override public int getMaxColumnsInOrderBy() { return 0; }
+    @Override public int getMaxColumnsInSelect() { return 0; }
+    @Override public int getMaxColumnsInTable() { return 0; }
+    @Override public int getMaxConnections() { return 0; }
+    @Override public int getMaxCursorNameLength() { return 0; }
+    @Override public int getMaxIndexLength() { return 0; }
+    @Override public int getMaxSchemaNameLength() { return 255; }
+    @Override public int getMaxProcedureNameLength() { return 0; }
+    @Override public int getMaxCatalogNameLength() { return 255; }
+    @Override public int getMaxRowSize() { return 0; }
+    @Override public boolean doesMaxRowSizeIncludeBlobs() { return false; }
+    @Override public int getMaxStatementLength() { return 0; }
+    @Override public int getMaxStatements() { return 0; }
+    @Override public int getMaxTableNameLength() { return 255; }
+    @Override public int getMaxTablesInSelect() { return 0; }
+    @Override public int getMaxUserNameLength() { return 0; }
 
     @Override
     public int getDefaultTransactionIsolation() {
@@ -785,41 +636,18 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
     // -- Other required methods --
 
-    @Override
-    public boolean isReadOnly() { return true; }
-
-    @Override
-    public boolean nullsAreSortedHigh() { return true; }
-
-    @Override
-    public boolean nullsAreSortedLow() { return false; }
-
-    @Override
-    public boolean nullsAreSortedAtStart() { return false; }
-
-    @Override
-    public boolean nullsAreSortedAtEnd() { return false; }
-
-    @Override
-    public boolean usesLocalFiles() { return false; }
-
-    @Override
-    public boolean usesLocalFilePerTable() { return false; }
-
-    @Override
-    public boolean nullPlusNonNullIsNull() { return true; }
-
-    @Override
-    public boolean supportsConvert() { return false; }
-
-    @Override
-    public boolean supportsConvert(int fromType, int toType) { return false; }
-
-    @Override
-    public boolean allProceduresAreCallable() { return false; }
-
-    @Override
-    public boolean allTablesAreSelectable() { return true; }
+    @Override public boolean isReadOnly() { return true; }
+    @Override public boolean nullsAreSortedHigh() { return true; }
+    @Override public boolean nullsAreSortedLow() { return false; }
+    @Override public boolean nullsAreSortedAtStart() { return false; }
+    @Override public boolean nullsAreSortedAtEnd() { return false; }
+    @Override public boolean usesLocalFiles() { return false; }
+    @Override public boolean usesLocalFilePerTable() { return false; }
+    @Override public boolean nullPlusNonNullIsNull() { return true; }
+    @Override public boolean supportsConvert() { return false; }
+    @Override public boolean supportsConvert(int fromType, int toType) { return false; }
+    @Override public boolean allProceduresAreCallable() { return false; }
+    @Override public boolean allTablesAreSelectable() { return true; }
 
     @Override
     public String getURL() {
@@ -828,47 +656,22 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public String getUserName() {
-        return tokenInfo.getDescription();
+        return connection.getTokenInfo() != null ? connection.getTokenInfo().getDescription() : null;
     }
 
-    @Override
-    public boolean isCatalogAtStart() { return true; }
-
-    @Override
-    public boolean ownUpdatesAreVisible(int type) { return false; }
-
-    @Override
-    public boolean ownDeletesAreVisible(int type) { return false; }
-
-    @Override
-    public boolean ownInsertsAreVisible(int type) { return false; }
-
-    @Override
-    public boolean othersUpdatesAreVisible(int type) { return false; }
-
-    @Override
-    public boolean othersDeletesAreVisible(int type) { return false; }
-
-    @Override
-    public boolean othersInsertsAreVisible(int type) { return false; }
-
-    @Override
-    public boolean updatesAreDetected(int type) { return false; }
-
-    @Override
-    public boolean deletesAreDetected(int type) { return false; }
-
-    @Override
-    public boolean insertsAreDetected(int type) { return false; }
-
-    @Override
-    public boolean locatorsUpdateCopy() { return false; }
-
-    @Override
-    public RowIdLifetime getRowIdLifetime() { return RowIdLifetime.ROWID_UNSUPPORTED; }
-
-    @Override
-    public int getSQLStateType() { return sqlStateSQL; }
+    @Override public boolean isCatalogAtStart() { return true; }
+    @Override public boolean ownUpdatesAreVisible(int type) { return false; }
+    @Override public boolean ownDeletesAreVisible(int type) { return false; }
+    @Override public boolean ownInsertsAreVisible(int type) { return false; }
+    @Override public boolean othersUpdatesAreVisible(int type) { return false; }
+    @Override public boolean othersDeletesAreVisible(int type) { return false; }
+    @Override public boolean othersInsertsAreVisible(int type) { return false; }
+    @Override public boolean updatesAreDetected(int type) { return false; }
+    @Override public boolean deletesAreDetected(int type) { return false; }
+    @Override public boolean insertsAreDetected(int type) { return false; }
+    @Override public boolean locatorsUpdateCopy() { return false; }
+    @Override public RowIdLifetime getRowIdLifetime() { return RowIdLifetime.ROWID_UNSUPPORTED; }
+    @Override public int getSQLStateType() { return sqlStateSQL; }
 
     @Override
     public ResultSet getProcedures(String catalog, String schemaPattern, String procedureNamePattern) throws SQLException {
@@ -1012,9 +815,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public <T> T unwrap(Class<T> iface) throws SQLException {
-        if (iface.isInstance(this)) {
-            return iface.cast(this);
-        }
+        if (iface.isInstance(this)) return iface.cast(this);
         throw new SQLException("Cannot unwrap to " + iface.getName());
     }
 
@@ -1025,15 +826,15 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
     // -- Helpers --
 
-    /**
-     * SQL LIKE pattern matching: % = any, _ = single char, null = match all.
-     */
-    private boolean matchesPattern(String value, String pattern) {
-        if (pattern == null || pattern.equals("%")) {
-            return true;
-        }
-        // Convert SQL LIKE pattern to regex
-        String regex = pattern
+    private String escapeSingleQuoteForLike(String pattern) {
+        return pattern.replace("'", "''");
+    }
+
+    private boolean matchesPattern(String value, String sqlPattern) {
+        if (sqlPattern == null || sqlPattern.equals("%")) return true;
+        if (value == null) return false;
+        if (sqlPattern.isEmpty()) return value.isEmpty();
+        String regex = sqlPattern
                 .replace("\\", "\\\\")
                 .replace(".", "\\.")
                 .replace("(", "\\(")
@@ -1053,33 +854,55 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         return value.matches("(?i)" + regex);
     }
 
-    @Override
-    public boolean supportsOpenStatementsAcrossRollback() throws SQLException {
-        return false;
+    private String buildCatalogInClause(String catalog) {
+        if (catalog != null && !catalog.equals("%")) {
+            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+        }
+        return "";
     }
 
-    @Override
-    public boolean supportsOpenStatementsAcrossCommit() throws SQLException {
-        return false;
+    private String buildScopeInClause(String catalog, String schema) {
+        boolean hasCatalog = catalog != null && !catalog.isEmpty() && !catalog.equals("%");
+        boolean hasSchema = schema != null && !schema.isEmpty() && !schema.equals("%");
+
+        if (hasCatalog && hasSchema) {
+            return " IN SCHEMA \"" + catalog.replace("\"", "\"\"") + "\".\"" + schema.replace("\"", "\"\"") + "\"";
+        } else if (hasCatalog) {
+            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+        }
+        return "";
     }
 
-    @Override
-    public boolean supportsOpenCursorsAcrossRollback() throws SQLException {
-        return false;
+    private String buildColumnsInClause(String catalog, String schema, String table) {
+        boolean hasCatalog = catalog != null && !catalog.isEmpty() && !catalog.equals("%");
+        boolean hasSchema = schema != null && !schema.isEmpty() && !schema.equals("%");
+        boolean hasTable = table != null && !table.isEmpty() && !table.equals("%");
+
+        if (hasCatalog && hasSchema && hasTable) {
+            return " IN TABLE \"" + catalog.replace("\"", "\"\"") + "\".\"" +
+                    schema.replace("\"", "\"\"") + "\".\"" + table.replace("\"", "\"\"") + "\"";
+        } else if (hasCatalog && hasSchema) {
+            return " IN SCHEMA \"" + catalog.replace("\"", "\"\"") + "\".\"" + schema.replace("\"", "\"\"") + "\"";
+        } else if (hasCatalog) {
+            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+        }
+        return "";
     }
 
-    @Override
-    public boolean supportsOpenCursorsAcrossCommit() throws SQLException {
-        return false;
+    private int findColumnIndex(ResultSet rs, String columnName) throws SQLException {
+        ResultSetMetaData meta = rs.getMetaData();
+        for (int i = 1; i <= meta.getColumnCount(); i++) {
+            if (meta.getColumnName(i).equalsIgnoreCase(columnName)) {
+                return i;
+            }
+        }
+        throw new SQLException("Column '" + columnName + "' not found in result");
     }
 
-    private ResultSet emptyTableResultSet() throws SQLException {
-        return new ArrayResultSet(
-                Arrays.asList("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
-                        "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"),
-                Collections.emptyList()
-        );
-    }
+    @Override public boolean supportsOpenStatementsAcrossRollback() throws SQLException { return false; }
+    @Override public boolean supportsOpenStatementsAcrossCommit() throws SQLException { return false; }
+    @Override public boolean supportsOpenCursorsAcrossRollback() throws SQLException { return false; }
+    @Override public boolean supportsOpenCursorsAcrossCommit() throws SQLException { return false; }
 
     private ResultSet emptyKeysResultSet() throws SQLException {
         return new ArrayResultSet(

@@ -6,6 +6,10 @@ import com.keboola.jdbc.http.JobQueueClient;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.Branch;
+import com.keboola.jdbc.http.model.JobStatus;
+import com.keboola.jdbc.http.model.QueryJob;
+import com.keboola.jdbc.http.model.QueryResult;
+import com.keboola.jdbc.http.model.StatementStatus;
 import com.keboola.jdbc.http.model.TokenInfo;
 import com.keboola.jdbc.http.model.Workspace;
 import org.slf4j.Logger;
@@ -44,6 +48,7 @@ import java.util.concurrent.Executor;
  *   <li>Resolve the branch ID (from config or by finding the default branch)</li>
  *   <li>Resolve the workspace ID (required - must be provided in config)</li>
  *   <li>Create a {@link QueryServiceClient} for subsequent query execution</li>
+ *   <li>Query CURRENT_DATABASE() and CURRENT_SCHEMA() to initialize catalog/schema</li>
  * </ol>
  *
  * <p>All connections are auto-commit and read-only by default (no transaction support).
@@ -93,7 +98,6 @@ public class KeboolaConnection implements Connection {
             queryClient = new QueryServiceClient(queryServiceUrl, config.getToken());
             branchId = resolveBranchId(config);
             workspaceId = resolveWorkspaceId(config);
-            catalog = tokenInfo.getOwner().getName();
 
             // Generate session ID — sent with every job so that SET, USE SCHEMA,
             // temp tables etc. persist across execute() calls
@@ -104,7 +108,10 @@ public class KeboolaConnection implements Connection {
                 this.currentSchema = config.getSchema();
             }
 
-            LOG.info("Connected: project='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
+            // Discover current database and schema from the server
+            initCatalogAndSchema();
+
+            LOG.info("Connected: catalog='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
                     catalog, branchId, workspaceId, currentSchema, sessionId);
 
         } catch (KeboolaJdbcException e) {
@@ -120,12 +127,6 @@ public class KeboolaConnection implements Connection {
     // Connection setup helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Verifies the Storage API token and returns the associated token info.
-     *
-     * @return token info with project and owner details
-     * @throws KeboolaJdbcException if the token is invalid
-     */
     private TokenInfo verifyToken() throws KeboolaJdbcException {
         LOG.debug("Verifying Storage API token");
         TokenInfo info = storageClient.verifyToken();
@@ -133,12 +134,6 @@ public class KeboolaConnection implements Connection {
         return info;
     }
 
-    /**
-     * Discovers the Query Service URL from the Storage API.
-     *
-     * @return the Query Service base URL
-     * @throws KeboolaJdbcException if discovery fails
-     */
     private String discoverQueryServiceUrl() throws KeboolaJdbcException {
         LOG.debug("Discovering Query Service URL");
         String url = storageClient.discoverQueryServiceUrl();
@@ -146,16 +141,6 @@ public class KeboolaConnection implements Connection {
         return url;
     }
 
-    /**
-     * Resolves the branch ID to use for queries.
-     *
-     * <p>If a branch is specified in the config (by ID or name), it is used directly or looked up.
-     * Otherwise, the default branch is found from the Storage API.
-     *
-     * @param config the connection configuration
-     * @return the resolved branch ID
-     * @throws KeboolaJdbcException if branch resolution fails
-     */
     private long resolveBranchId(ConnectionConfig config) throws KeboolaJdbcException {
         Long brId = config.getBranchId();
         if (brId != null && brId > 0) {
@@ -173,16 +158,41 @@ public class KeboolaConnection implements Connection {
     }
 
     /**
-     * Resolves the workspace ID. If not specified in config, auto-discovers from API:
-     * - Lists all active workspaces
-     * - If exactly one active workspace exists, uses it automatically
-     * - If multiple exist, lists them in the error message so the user can pick one
-     * - If none exist, suggests creating one
-     *
-     * @param config the connection configuration
-     * @return the resolved workspace ID
-     * @throws KeboolaJdbcException if workspace cannot be resolved
+     * Queries the server for CURRENT_DATABASE() and CURRENT_SCHEMA() to initialize
+     * the catalog and schema fields. If a schema was specified via connection config,
+     * executes USE SCHEMA first.
      */
+    private void initCatalogAndSchema() throws SQLException {
+        try {
+            String initSql;
+            if (currentSchema != null && !currentSchema.isEmpty()) {
+                initSql = "USE SCHEMA \"" + currentSchema.replace("\"", "\"\"")
+                        + "\"; SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()";
+            } else {
+                initSql = "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()";
+            }
+
+            List<String> stmts = KeboolaStatement.splitStatements(initSql);
+            QueryJob job = queryClient.submitJob(branchId, workspaceId, stmts, sessionId);
+            JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
+
+            StatementStatus lastStmt = jobStatus.getStatements().get(jobStatus.getStatements().size() - 1);
+            QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStmt.getId(), 0, 100);
+
+            if (result.getData() != null && !result.getData().isEmpty()) {
+                List<String> row = result.getData().get(0);
+                if (row.size() >= 2) {
+                    String db = row.get(0);
+                    String sch = row.get(1);
+                    if (db != null) this.catalog = db;
+                    if (sch != null) this.currentSchema = sch;
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to discover current database/schema from server: {}", e.getMessage());
+        }
+    }
+
     private long resolveWorkspaceId(ConnectionConfig config) throws KeboolaJdbcException {
         Long wsId = config.getWorkspaceId();
         if (wsId != null && wsId > 0) {
@@ -192,8 +202,6 @@ public class KeboolaConnection implements Connection {
 
         LOG.debug("No workspace specified, auto-discovering from API");
         List<Workspace> allWorkspaces = storageClient.listWorkspaces();
-        // Storage API does not return a "status" field for workspaces - if they are listed, they exist.
-        // Prefer the most recently created workspace (last in list, highest ID).
         List<Workspace> activeWorkspaces = allWorkspaces;
 
         if (activeWorkspaces.isEmpty()) {
@@ -202,7 +210,6 @@ public class KeboolaConnection implements Connection {
                     + "Create a workspace in Keboola UI first, then reconnect.");
         }
 
-        // Auto-select the most recently created workspace (last in list = highest ID)
         Workspace selected = activeWorkspaces.get(activeWorkspaces.size() - 1);
         LOG.info("Auto-selected workspace: id={}, name='{}', type={} (out of {} available)",
                 selected.getId(), selected.getName(), selected.getType(), activeWorkspaces.size());
@@ -297,7 +304,7 @@ public class KeboolaConnection implements Connection {
     @Override
     public DatabaseMetaData getMetaData() throws SQLException {
         checkClosed();
-        return new KeboolaDatabaseMetaData(this, storageClient, tokenInfo);
+        return new KeboolaDatabaseMetaData(this);
     }
 
     // -------------------------------------------------------------------------
@@ -334,7 +341,13 @@ public class KeboolaConnection implements Connection {
 
     @Override
     public void setCatalog(String catalog) throws SQLException {
-        // no-op: catalog is determined by the token / project
+        checkClosed();
+        if (catalog == null) return;
+        LOG.debug("setCatalog({})", catalog);
+        try (Statement stmt = createStatement()) {
+            stmt.execute("USE DATABASE \"" + catalog.replace("\"", "\"\"") + "\"");
+        }
+        this.catalog = catalog;
     }
 
     @Override
@@ -344,7 +357,13 @@ public class KeboolaConnection implements Connection {
 
     @Override
     public void setSchema(String schema) throws SQLException {
+        checkClosed();
         LOG.debug("setSchema({})", schema);
+        if (schema != null) {
+            try (Statement stmt = createStatement()) {
+                stmt.execute("USE SCHEMA \"" + schema.replace("\"", "\"\"") + "\"");
+            }
+        }
         this.currentSchema = schema;
     }
 
@@ -359,20 +378,17 @@ public class KeboolaConnection implements Connection {
 
     @Override
     public void setAutoCommit(boolean autoCommit) throws SQLException {
-        // stored but always effectively true - Keboola does not support transactions
         this.autoCommit = autoCommit;
     }
 
     @Override
     public void commit() throws SQLException {
         checkClosed();
-        // no-op: auto-commit mode
     }
 
     @Override
     public void rollback() throws SQLException {
         checkClosed();
-        // no-op: auto-commit mode
     }
 
     @Override
@@ -405,36 +421,17 @@ public class KeboolaConnection implements Connection {
 
     @Override
     public void setTransactionIsolation(int level) throws SQLException {
-        // no-op: transactions are not supported
-    }
-
-    // -------------------------------------------------------------------------
-    // Warnings
-    // -------------------------------------------------------------------------
-
-    @Override
-    public SQLWarning getWarnings() throws SQLException {
-        return null;
-    }
-
-    @Override
-    public void clearWarnings() throws SQLException {
         // no-op
     }
 
-    // -------------------------------------------------------------------------
-    // SQL escaping
-    // -------------------------------------------------------------------------
+    @Override
+    public SQLWarning getWarnings() throws SQLException { return null; }
 
     @Override
-    public String nativeSQL(String sql) throws SQLException {
-        // Return as-is: no SQL translation needed
-        return sql;
-    }
+    public void clearWarnings() throws SQLException { }
 
-    // -------------------------------------------------------------------------
-    // Type map
-    // -------------------------------------------------------------------------
+    @Override
+    public String nativeSQL(String sql) throws SQLException { return sql; }
 
     @Override
     public Map<String, Class<?>> getTypeMap() throws SQLException {
@@ -446,23 +443,13 @@ public class KeboolaConnection implements Connection {
         throw new SQLFeatureNotSupportedException("setTypeMap not supported");
     }
 
-    // -------------------------------------------------------------------------
-    // Holdability
-    // -------------------------------------------------------------------------
-
     @Override
     public int getHoldability() throws SQLException {
         return ResultSet.CLOSE_CURSORS_AT_COMMIT;
     }
 
     @Override
-    public void setHoldability(int holdability) throws SQLException {
-        // no-op
-    }
-
-    // -------------------------------------------------------------------------
-    // Savepoints (not supported)
-    // -------------------------------------------------------------------------
+    public void setHoldability(int holdability) throws SQLException { }
 
     @Override
     public Savepoint setSavepoint() throws SQLException {
@@ -478,10 +465,6 @@ public class KeboolaConnection implements Connection {
     public void releaseSavepoint(Savepoint savepoint) throws SQLException {
         throw new SQLFeatureNotSupportedException("Savepoints are not supported");
     }
-
-    // -------------------------------------------------------------------------
-    // BLOB / CLOB / NCLOB / SQLXML / Array / Struct factories
-    // -------------------------------------------------------------------------
 
     @Override
     public Blob createBlob() throws SQLException {
@@ -513,58 +496,30 @@ public class KeboolaConnection implements Connection {
         throw new SQLFeatureNotSupportedException("createStruct not supported");
     }
 
-    // -------------------------------------------------------------------------
-    // Client info
-    // -------------------------------------------------------------------------
+    @Override
+    public Properties getClientInfo() throws SQLException { return new Properties(); }
 
     @Override
-    public Properties getClientInfo() throws SQLException {
-        return new Properties();
-    }
+    public String getClientInfo(String name) throws SQLException { return null; }
 
     @Override
-    public String getClientInfo(String name) throws SQLException {
-        return null;
-    }
+    public void setClientInfo(String name, String value) throws SQLClientInfoException { }
 
     @Override
-    public void setClientInfo(String name, String value) throws SQLClientInfoException {
-        // no-op
-    }
+    public void setClientInfo(Properties properties) throws SQLClientInfoException { }
 
     @Override
-    public void setClientInfo(Properties properties) throws SQLClientInfoException {
-        // no-op
-    }
-
-    // -------------------------------------------------------------------------
-    // Abort / network timeout
-    // -------------------------------------------------------------------------
+    public void abort(Executor executor) throws SQLException { close(); }
 
     @Override
-    public void abort(Executor executor) throws SQLException {
-        close();
-    }
+    public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException { }
 
     @Override
-    public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
-        // no-op
-    }
-
-    @Override
-    public int getNetworkTimeout() throws SQLException {
-        return 0;
-    }
-
-    // -------------------------------------------------------------------------
-    // Wrapper interface
-    // -------------------------------------------------------------------------
+    public int getNetworkTimeout() throws SQLException { return 0; }
 
     @Override
     public <T> T unwrap(Class<T> iface) throws SQLException {
-        if (iface.isInstance(this)) {
-            return iface.cast(this);
-        }
+        if (iface.isInstance(this)) return iface.cast(this);
         throw new SQLException("Not a wrapper for " + iface.getName());
     }
 
@@ -577,46 +532,22 @@ public class KeboolaConnection implements Connection {
     // Accessors for internal use by other driver classes
     // -------------------------------------------------------------------------
 
-    /** Returns the Keboola Connection host, e.g. "connection.keboola.com". */
-    public String getHost() {
-        return host;
-    }
+    public String getHost() { return host; }
 
-    /** Returns the Storage API client (used by KeboolaDatabaseMetaData). */
-    public StorageApiClient getStorageClient() {
-        return storageClient;
-    }
+    /** Returns the Storage API client (used by virtual table handlers). */
+    public StorageApiClient getStorageClient() { return storageClient; }
 
-    /** Returns the Query Service client (used by KeboolaStatement). */
-    public QueryServiceClient getQueryClient() {
-        return queryClient;
-    }
+    public QueryServiceClient getQueryClient() { return queryClient; }
 
-    /** Returns the verified token info (project name, owner, etc.). */
-    public TokenInfo getTokenInfo() {
-        return tokenInfo;
-    }
+    public TokenInfo getTokenInfo() { return tokenInfo; }
 
-    /** Returns the resolved branch ID used for all query executions on this connection. */
-    public long getBranchId() {
-        return branchId;
-    }
+    public long getBranchId() { return branchId; }
 
-    /** Returns the resolved workspace ID used for all query executions on this connection. */
-    public long getWorkspaceId() {
-        return workspaceId;
-    }
-
-    // -------------------------------------------------------------------------
-    // Job Queue client (lazy init)
-    // -------------------------------------------------------------------------
+    public long getWorkspaceId() { return workspaceId; }
 
     /**
      * Returns the Job Queue API client, lazily discovering the service URL on first access.
      * Thread-safe via double-checked locking.
-     *
-     * @return the JobQueueClient instance
-     * @throws SQLException if Job Queue service discovery fails
      */
     public JobQueueClient getJobQueueClient() throws SQLException {
         if (jobQueueClient == null) {
@@ -635,35 +566,16 @@ public class KeboolaConnection implements Connection {
         return jobQueueClient;
     }
 
-    // -------------------------------------------------------------------------
-    // Session management
-    // -------------------------------------------------------------------------
-
-    /**
-     * Returns the Query Service session ID (generated on connection init).
-     * Sent with every job so that SET, USE SCHEMA, temp tables persist across calls.
-     */
-    public String getSessionId() {
-        return sessionId;
-    }
+    public String getSessionId() { return sessionId; }
 
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
 
     private void checkClosed() throws SQLException {
-        if (closed) {
-            throw new SQLException("Connection is closed");
-        }
+        if (closed) throw new SQLException("Connection is closed");
     }
 
-    /**
-     * Validates that the requested ResultSet type and concurrency are supported.
-     *
-     * @param resultSetType        must be TYPE_FORWARD_ONLY
-     * @param resultSetConcurrency must be CONCUR_READ_ONLY
-     * @throws SQLFeatureNotSupportedException if unsupported values are requested
-     */
     private void validateResultSetType(int resultSetType, int resultSetConcurrency)
             throws SQLFeatureNotSupportedException {
         if (resultSetType != ResultSet.TYPE_FORWARD_ONLY) {

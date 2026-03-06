@@ -1,8 +1,8 @@
 # Keboola JDBC Driver
 
-JDBC driver for [Keboola](https://www.keboola.com/) that connects any JDBC-compatible client (DBeaver, DataGrip, etc.) to Keboola projects via the Query Service API.
+JDBC driver for [Keboola](https://www.keboola.com/) that connects any JDBC-compatible client (DBeaver, DataGrip, etc.) to Keboola projects via the Query Service API. Supports an embedded **DuckDB local backend** for offline SQL development with runtime backend switching.
 
-User provides only an **API token and stack URL** — the driver auto-discovers branches, workspaces, and metadata from Snowflake directly.
+User provides only an **API token and stack URL** — the driver auto-discovers branches, workspaces, and metadata from Snowflake directly. Or use the DuckDB backend with **zero cloud dependency**.
 
 ## JDBC Mapping
 
@@ -19,21 +19,23 @@ All metadata (databases, schemas, tables, columns) comes from Snowflake SHOW com
 ### Build
 
 ```bash
-mvn clean package
+make dist
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-2.1.0.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `dist/keboola-jdbc-driver-3.0.1-experimental.jar` (~78 MB, all dependencies shaded + embedded DuckDB).
 
 Requires **Java 11+**.
 
 ### Connection Properties
 
-| Property | Required | Description |
-|---|---|---|
-| `token` | Yes | Keboola Storage API token |
-| `branch` | No | Branch ID (auto-detects default branch) |
-| `workspace` | No | Workspace ID (auto-selects newest available) |
-| `schema` | No | Default schema (e.g. `in.c-main`) for unqualified table refs |
+| Property | Required | Default | Description |
+|---|---|---|---|
+| `token` | Yes* | — | Keboola Storage API token (*not required for DuckDB-only mode) |
+| `branch` | No | auto-detect | Branch ID (auto-detects default branch) |
+| `workspace` | No | auto-select | Workspace ID (auto-selects newest available) |
+| `schema` | No | — | Default schema (e.g. `in.c-main`) for unqualified table refs |
+| `backend` | No | `queryservice` | Backend type: `queryservice` or `duckdb` |
+| `duckdbPath` | No | `:memory:` | DuckDB file path for persistent storage |
 
 ### JDBC URL Format
 
@@ -45,29 +47,40 @@ Examples:
 ```
 jdbc:keboola://connection.keboola.com
 jdbc:keboola://connection.north-europe.azure.keboola.com
+jdbc:keboola://localhost                                    # DuckDB-only mode
 ```
 
 ### Java Example
 
 ```java
+// Query Service (cloud) — default
 String url = "jdbc:keboola://connection.keboola.com";
 Properties props = new Properties();
 props.setProperty("token", System.getenv("KEBOOLA_TOKEN"));
 
 try (Connection conn = DriverManager.getConnection(url, props)) {
-    // Browse schemas
-    try (ResultSet rs = conn.getMetaData().getSchemas()) {
-        while (rs.next()) {
-            System.out.println(rs.getString("TABLE_SCHEM"));
-        }
-    }
-
-    // Execute SQL
     try (Statement stmt = conn.createStatement();
          ResultSet rs = stmt.executeQuery(
              "SELECT * FROM \"in.c-main\".\"items_catalog\" LIMIT 10")) {
         while (rs.next()) {
             System.out.println(rs.getString(1));
+        }
+    }
+}
+
+// DuckDB (local, no cloud) — zero setup
+String localUrl = "jdbc:keboola://localhost";
+Properties localProps = new Properties();
+localProps.setProperty("backend", "duckdb");
+localProps.setProperty("duckdbPath", "/tmp/my_project.duckdb");
+
+try (Connection conn = DriverManager.getConnection(localUrl, localProps)) {
+    try (Statement stmt = conn.createStatement()) {
+        stmt.execute("CREATE TABLE test (id INT, name VARCHAR)");
+        stmt.execute("INSERT INTO test VALUES (1, 'hello')");
+        ResultSet rs = stmt.executeQuery("SELECT * FROM test");
+        while (rs.next()) {
+            System.out.println(rs.getString("name"));
         }
     }
 }
@@ -77,7 +90,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.1.0.jar`
+3. **Libraries** tab > **Add File** > select `dist/keboola-jdbc-driver-3.0.1-experimental.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -85,6 +98,87 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 8. **Test Connection**
 
 The database navigator will show your Snowflake databases, schemas, tables, and views — plus the virtual `_keboola` schema with platform metadata.
+
+### DBeaver with DuckDB backend
+
+Same driver setup, but in **Driver Properties**:
+- Set `backend` to `duckdb`
+- Set `duckdbPath` to a file path (e.g. `/Users/you/project/local.duckdb`)
+- Change **URL Template** to `jdbc:keboola://localhost`
+- `token` is not required for DuckDB-only mode
+
+## DuckDB Local Backend
+
+The driver embeds DuckDB as a local SQL backend. Use it for offline SQL development, prototyping, and data exploration without cloud connectivity.
+
+### Modes
+
+| Mode | URL | Properties | Description |
+|---|---|---|---|
+| **DuckDB only** | `jdbc:keboola://localhost` | `backend=duckdb` | Local-only, no cloud |
+| **DuckDB persistent** | `jdbc:keboola://localhost` | `backend=duckdb`, `duckdbPath=/path/to/file.duckdb` | Data persists between sessions |
+| **Hybrid** | `jdbc:keboola://connection.keboola.com` | `token=xxx`, `backend=duckdb`, `duckdbPath=/path/to/file.duckdb` | Both backends initialized, switch at runtime |
+
+### Runtime Backend Switching
+
+When both `token` and `backend=duckdb` are provided, both backends are initialized. Switch between them at runtime:
+
+```sql
+-- Start in DuckDB (local)
+CREATE TABLE staging (id INT, name VARCHAR);
+INSERT INTO staging VALUES (1, 'local data');
+SELECT * FROM staging;
+
+-- Switch to Query Service (cloud)
+KEBOOLA USE BACKEND queryservice;
+SELECT * FROM "in.c-main"."items_catalog" LIMIT 10;
+
+-- Switch back to DuckDB
+KEBOOLA USE BACKEND duckdb;
+SELECT * FROM staging;
+```
+
+### PULL — Cloud to Local
+
+Pull data from Keboola Query Service into your local DuckDB:
+
+```sql
+-- Pull a table
+KEBOOLA PULL TABLE "in.c-main"."items_catalog" INTO local_items;
+
+-- Pull a custom query result
+KEBOOLA PULL QUERY SELECT id, name FROM "in.c-main"."items_catalog" WHERE active = true LIMIT 1000 INTO active_items;
+```
+
+The `PULL` command executes the query on the Query Service backend and creates a local DuckDB table with the results. Requires both backends to be available (token must be provided).
+
+### PUSH — Local to Cloud
+
+Push data from your local DuckDB table to Keboola Query Service (Snowflake):
+
+```sql
+-- Push a local table (creates table in the current cloud schema)
+KEBOOLA PUSH TABLE local_items;
+
+-- Push to a specific target
+KEBOOLA PUSH TABLE local_items INTO "out.c-results"."exported_items";
+```
+
+The `PUSH` command reads all rows from the local DuckDB table, creates a `VARCHAR`-typed table on Snowflake via the Query Service, and inserts data in batches. Requires both backends to be available.
+
+### Session Logging
+
+All SQL executed through the driver is logged to a DuckDB system table for dialect compatibility analysis:
+
+```sql
+-- View session log
+KEBOOLA SESSION LOG;
+
+-- Query the log table directly (when using DuckDB backend)
+SELECT * FROM _keboola_session_log ORDER BY executed_at DESC LIMIT 20;
+```
+
+The session log captures: `executed_at`, `backend`, `sql_text`, `success`, `error_message`, `duration_ms`, `rows_affected`. Logging is automatic when a DuckDB backend is available.
 
 ## Virtual Tables
 
@@ -144,15 +238,19 @@ Autocomplete works for virtual table and column names. "View Data" from the side
 
 ### How it works
 
-The command dispatcher intercepts SQL in `KeboolaStatement.execute()` *before* it reaches the Query Service. If the SQL matches a virtual table pattern (`_keboola.*`) or a command (`KEBOOLA HELP`), it returns an in-memory `ArrayResultSet` directly — zero network calls to the Query Service.
+The command dispatcher intercepts SQL in `KeboolaStatement.execute()` *before* it reaches the backend. If the SQL matches a virtual table pattern (`_keboola.*`) or a command (`KEBOOLA HELP`), it returns an in-memory `ArrayResultSet` directly — zero network calls.
 
 ```
 SQL input
-  │
-  ├─ "KEBOOLA HELP"           → HelpCommandHandler → ArrayResultSet
-  ├─ "_keboola.components"    → VirtualTableHandler → Storage API → ArrayResultSet
-  ├─ "_keboola.jobs LIMIT 5"  → VirtualTableHandler → Job Queue API → ArrayResultSet
-  └─ "SELECT * FROM ..."      → Query Service (normal flow)
+  |
+  +-- "KEBOOLA HELP"                  --> HelpCommandHandler --> ArrayResultSet
+  +-- "KEBOOLA USE BACKEND duckdb"    --> BackendSwitchHandler --> switch backend
+  +-- "KEBOOLA PULL TABLE ..."        --> PullCommandHandler --> cloud-to-local transfer
+  +-- "KEBOOLA PUSH TABLE ..."        --> PushCommandHandler --> local-to-cloud transfer
+  +-- "KEBOOLA SESSION LOG"           --> SessionLogHandler --> ArrayResultSet
+  +-- "_keboola.components"           --> VirtualTableHandler --> Storage API --> ArrayResultSet
+  +-- "_keboola.jobs LIMIT 5"         --> VirtualTableHandler --> Job Queue API --> ArrayResultSet
+  +-- "SELECT * FROM ..."             --> active backend (Query Service or DuckDB)
 ```
 
 ## USE SCHEMA Support
@@ -162,7 +260,7 @@ The driver supports setting a default schema so you can use unqualified table na
 ```sql
 USE SCHEMA "in.c-main";
 SELECT * FROM "items_catalog" LIMIT 10;
--- No need to write "in.c-main"."items_catalog" — Snowflake resolves it
+-- No need to write "in.c-main"."items_catalog" -- Snowflake resolves it
 ```
 
 **How it works:** Each JDBC connection maps to a persistent Query Service session. When you execute `USE SCHEMA`, it takes effect in the server-side Snowflake session and persists across all subsequent queries on that connection — just like a native Snowflake session.
@@ -185,35 +283,43 @@ Connection conn = DriverManager.getConnection(url, props);
 ## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│              JDBC Client                │
-│        (DBeaver / DataGrip / App)       │
-└──────────────┬──────────────────────────┘
-               │ JDBC API
-┌──────────────▼──────────────────────────┐
-│         Keboola JDBC Driver             │
-│                                         │
-│  KeboolaDriver ─► KeboolaConnection     │
-│                    ├─ KeboolaStatement  │
-│                    ├─ KeboolaResultSet  │
-│                    └─ DatabaseMetaData  │
-│                                         │
-│  Metadata (sidebar):                    │
-│  ├─ SHOW DATABASES/SCHEMAS/TABLES/...   │
-│  │   (via Query Service → Snowflake)    │
-│  └─ Virtual _keboola tables overlay     │
-│                                         │
-│  Command Dispatcher:                    │
-│  ├─ HelpCommandHandler                  │
-│  └─ VirtualTableHandler → Registry      │
-│                                         │
-│  HTTP Clients:                          │
-│  ├─ StorageApiClient (virtual tables)   │
-│  ├─ QueryServiceClient (SQL + metadata) │
-│  └─ JobQueueClient (job history)        │
-└──────┬──────────┬──────────┬────────────┘
-       │          │          │
-       ▼          ▼          ▼
++-------------------------------------------+
+|            JDBC Client                    |
+|      (DBeaver / DataGrip / App)           |
++------------------+------------------------+
+                   | JDBC API
++------------------v------------------------+
+|         Keboola JDBC Driver               |
+|                                           |
+|  KeboolaDriver --> KeboolaConnection      |
+|                    +-- KeboolaStatement    |
+|                    +-- KeboolaResultSet    |
+|                    +-- DatabaseMetaData    |
+|                                           |
+|  Command Dispatcher:                      |
+|  +-- HelpCommandHandler                   |
+|  +-- BackendSwitchHandler                 |
+|  +-- PullCommandHandler                   |
+|  +-- PushCommandHandler                   |
+|  +-- SessionLogHandler                    |
+|  +-- VirtualTableHandler --> Registry     |
+|                                           |
+|  Backends (switchable at runtime):        |
+|  +-- QueryServiceBackend (cloud)          |
+|  |   +-- QueryServiceClient (async HTTP)  |
+|  +-- DuckDbBackend (local, embedded)      |
+|      +-- DuckDB JDBC (nested JAR)         |
+|                                           |
+|  Session Logging:                         |
+|  +-- SqlSessionLogger --> DuckDB table    |
+|                                           |
+|  HTTP Clients:                            |
+|  +-- StorageApiClient (virtual tables)    |
+|  +-- QueryServiceClient (SQL + metadata)  |
+|  +-- JobQueueClient (job history)         |
++------+----------+----------+-------------+
+       |          |          |
+       v          v          v
   Storage API  Query Svc  Job Queue API
   (virt.tables) (SQL+meta) (job history)
 ```
@@ -224,29 +330,41 @@ Connection conn = DriverManager.getConnection(url, props);
 
 **Job Queue API** (`queue.keboola.com`, auto-discovered): Job history via `/search/jobs` endpoint. Lazy-initialized on first `_keboola.jobs` query.
 
+**DuckDB** (embedded): Local SQL engine loaded from a nested JAR resource via `URLClassLoader`. Supports persistent file storage or in-memory ephemeral mode.
+
 ### Key Design Decisions
 
 - **Snowflake-native metadata**: Sidebar shows real Snowflake objects via `SHOW` commands through the Query Service — no Storage API metadata invention
 - **Async execution**: Submit job > poll with exponential backoff (100ms to 2s) > fetch paginated results
-- **Command dispatcher**: Intercepts virtual table queries and KEBOOLA commands before they reach Query Service
+- **Command dispatcher**: Intercepts virtual table queries and KEBOOLA commands before they reach the backend
 - **Virtual table isolation**: `_keboola` schema is injected into metadata results but excluded from Snowflake `SHOW` commands to avoid "object does not exist" errors
 - **Uber-jar**: OkHttp, Jackson, and Kotlin runtime relocated to avoid classpath conflicts
 - **Type mapping**: Snowflake types mapped to `java.sql.Types` (VARCHAR, NUMBER, BOOLEAN, DATE, TIMESTAMP, etc.)
+- **Nested JAR for DuckDB**: DuckDB's JAR is embedded as a resource (not merged into the uber-jar) and loaded via `URLClassLoader` at runtime. This preserves the intact ZIP structure that DuckDB's native library loader requires — avoids `ZipException` in DBeaver/DataGrip classloader contexts
+- **Backend abstraction**: `QueryBackend` interface with two implementations (`QueryServiceBackend`, `DuckDbBackend`) enables runtime switching via Strategy pattern
+- **Session logging**: All SQL captured in a DuckDB system table for dialect compatibility analysis between local and cloud execution
 
 ## Running Tests
 
 ```bash
-mvn test
+mvn test      # 235 unit tests
+make test     # same thing via Makefile
 ```
 
-Unit tests cover: `TypeMapper`, `ConnectionConfig`, `ArrayResultSet`, `KeboolaDriver`, `SchemaCache`, `CommandDispatcher`, `HelpCommandHandler`, `VirtualTableHandler` (172 tests).
+Unit tests cover: `TypeMapper`, `ConnectionConfig`, `ArrayResultSet`, `KeboolaDriver`, `SchemaCache`, `CommandDispatcher`, `HelpCommandHandler`, `VirtualTableHandler`, `BackendSwitchHandler`, `PullCommandHandler`, `PushCommandHandler`, `SessionLogHandler`, `SqlSessionLogger`, `DuckDbBackend`, `QueryServiceBackend`, `KeboolaStatement`.
 
 ### Integration Tests
 
 ```bash
 export KEBOOLA_TOKEN="your-token"
 export KEBOOLA_WORKSPACE="your-workspace-id"  # recommended
-make test-e2e                                   # 32 E2E tests
+make test-e2e                                   # Query Service E2E tests
+```
+
+### DuckDB Integration Tests
+
+```bash
+mvn verify -Pduckdb-integration               # DuckDB + backend switching E2E tests (no cloud needed)
 ```
 
 ### Manual Integration Test
@@ -262,32 +380,43 @@ make manual-test
 
 ```
 src/main/java/com/keboola/jdbc/
-├── KeboolaDriver.java                # SPI entry point, URL parsing
-├── KeboolaConnection.java            # Connection lifecycle, service discovery
-├── KeboolaStatement.java             # SQL execution, command interception
-├── KeboolaPreparedStatement.java     # Parameterized queries
-├── KeboolaResultSet.java             # Lazy-paging result set
-├── KeboolaDatabaseMetaData.java      # SHOW commands metadata (+ virtual _keboola)
-├── ArrayResultSet.java               # In-memory ResultSet for metadata
-├── command/
-│   ├── KeboolaCommandHandler.java    # Handler interface
-│   ├── KeboolaCommandDispatcher.java # Chain-of-responsibility dispatcher
-│   ├── HelpCommandHandler.java       # KEBOOLA HELP command
-│   ├── VirtualTableHandler.java      # _keboola.* SQL detection + LIMIT parsing
-│   ├── VirtualTableRegistry.java     # API calls → ArrayResultSet for each table
-│   └── VirtualTableMetadata.java     # Column definitions for IDE integration
-├── config/
-│   ├── DriverConfig.java             # Driver constants and defaults
-│   └── ConnectionConfig.java         # URL + properties parsing
-├── http/
-│   ├── StorageApiClient.java         # Storage API v2 (virtual tables + discovery)
-│   ├── QueryServiceClient.java       # Query Service API v1 (SQL + SHOW metadata)
-│   ├── JobQueueClient.java           # Job Queue API client (lazy init)
-│   └── model/                        # API data models
-├── meta/
-│   └── TypeMapper.java               # Snowflake → JDBC type mapping
-└── exception/
-    └── KeboolaJdbcException.java     # SQLSTATE error codes
++-- KeboolaDriver.java                # SPI entry point, URL parsing
++-- KeboolaConnection.java            # Connection lifecycle, service discovery, backend management
++-- KeboolaStatement.java             # SQL execution, command interception, session logging
++-- KeboolaPreparedStatement.java     # Parameterized queries
++-- KeboolaResultSet.java             # Lazy-paging result set (Query Service)
++-- KeboolaDatabaseMetaData.java      # SHOW commands metadata (+ virtual _keboola)
++-- ArrayResultSet.java               # In-memory ResultSet for metadata
++-- backend/
+|   +-- QueryBackend.java             # Backend interface (Strategy pattern)
+|   +-- ExecutionResult.java          # Result value object
+|   +-- QueryServiceBackend.java      # Keboola Query Service (async HTTP)
+|   +-- DuckDbBackend.java            # Embedded DuckDB (local JDBC via nested JAR)
++-- command/
+|   +-- KeboolaCommandHandler.java    # Handler interface
+|   +-- KeboolaCommandDispatcher.java # Chain-of-responsibility dispatcher
+|   +-- HelpCommandHandler.java       # KEBOOLA HELP command
+|   +-- BackendSwitchHandler.java     # KEBOOLA USE BACKEND command
+|   +-- PullCommandHandler.java       # KEBOOLA PULL TABLE/QUERY command
+|   +-- PushCommandHandler.java       # KEBOOLA PUSH TABLE command
+|   +-- SessionLogHandler.java        # KEBOOLA SESSION LOG command
+|   +-- VirtualTableHandler.java      # _keboola.* SQL detection + LIMIT parsing
+|   +-- VirtualTableRegistry.java     # API calls --> ArrayResultSet for each table
+|   +-- VirtualTableMetadata.java     # Column definitions for IDE integration
++-- config/
+|   +-- DriverConfig.java             # Driver constants and defaults
+|   +-- ConnectionConfig.java         # URL + properties parsing
++-- http/
+|   +-- StorageApiClient.java         # Storage API v2 (virtual tables + discovery)
+|   +-- QueryServiceClient.java       # Query Service API v1 (SQL + SHOW metadata)
+|   +-- JobQueueClient.java           # Job Queue API client (lazy init)
+|   +-- model/                        # API data models
++-- logging/
+|   +-- SqlSessionLogger.java         # SQL session logging to DuckDB table
++-- meta/
+|   +-- TypeMapper.java               # Snowflake --> JDBC type mapping
++-- exception/
+    +-- KeboolaJdbcException.java     # SQLSTATE error codes
 ```
 
 ## Contributors
@@ -296,6 +425,22 @@ src/main/java/com/keboola/jdbc/
 - **Jan Botorek** ([@jbotor](https://github.com/jbotor)) — found and fixed `StackOverflowError` recursion in `setSchema()`/`interceptUseCommand()` loop (2.1.0). See [PR #4](https://github.com/padak/keboola_jdbc/pull/4).
 
 ## Changelog
+
+### 3.0.1-experimental
+
+- **DuckDB local backend**: Embedded DuckDB as a local SQL engine. Connect with `backend=duckdb` for zero-cloud SQL development. Supports persistent file storage (`duckdbPath`) and in-memory ephemeral mode.
+- **Runtime backend switching**: `KEBOOLA USE BACKEND duckdb` / `KEBOOLA USE BACKEND queryservice` switches between local and cloud execution at runtime. Both backends can be initialized simultaneously when a token is provided.
+- **PULL command**: `KEBOOLA PULL TABLE <source> INTO <local_table>` and `KEBOOLA PULL QUERY <sql> INTO <local_table>` transfer data from cloud to local DuckDB.
+- **PUSH command**: `KEBOOLA PUSH TABLE <local_table> [INTO <target>]` transfers data from local DuckDB to cloud (Snowflake via Query Service). Creates VARCHAR tables, inserts in batches.
+- **Session logging**: All SQL execution is logged to `_keboola_session_log` DuckDB table with timing, backend, success/error, and row counts. View with `KEBOOLA SESSION LOG`.
+- **Nested JAR for DuckDB**: DuckDB JAR embedded as a resource and loaded via `URLClassLoader` to avoid `ZipException` in DBeaver/DataGrip classloader contexts.
+- **QueryBackend interface**: Strategy pattern abstraction (`QueryServiceBackend`, `DuckDbBackend`) enables clean backend switching.
+- **BackendSwitchHandler regex fix**: Handles trailing semicolons from DBeaver SQL editor.
+
+### 3.0.0-experimental
+
+- **Backend abstraction**: Introduced `QueryBackend` interface with `QueryServiceBackend` and `DuckDbBackend` implementations. Pure refactor of SQL execution path — no behavior change for existing Query Service users.
+- **DuckDB backend (initial)**: First implementation of embedded DuckDB backend with in-memory and file-based modes.
 
 ### 2.1.0
 

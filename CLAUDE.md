@@ -13,16 +13,17 @@ JDBC mapping: Catalog = Database (from Snowflake), Schema = Schema (from Snowfla
 ## Build & Test Commands
 
 ```bash
-mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.0.0.jar)
+mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-3.0.0-experimental.jar)
 mvn test                   # Run all unit tests
 mvn test -pl . -Dtest=TypeMapperTest          # Run single test class
 mvn test -pl . -Dtest=TypeMapperTest#testVarchar  # Run single test method
-mvn verify -Pkeboola-integration              # Run integration tests (needs KEBOOLA_TOKEN env)
+mvn verify -Pkeboola-integration              # Run Query Service integration tests (needs KEBOOLA_TOKEN env)
+mvn verify -Pduckdb-integration               # Run DuckDB + backend switching integration tests (no token needed)
 ```
 
 Manual integration test:
 ```bash
-KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-2.0.0.jar com.keboola.jdbc.ManualConnectionTest
+KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-3.0.0-experimental.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 **After every version bump or code change, always run `make dist`** to rebuild the uber-jar and copy it to `dist/`. The `dist/` directory contains the release-ready jars that users download. **Never delete old jars from `dist/`** — keep all previous versions for version history.
@@ -31,19 +32,30 @@ Java 11+. Surefire needs `-Dnet.bytebuddy.experimental=true` (already configured
 
 ## Architecture
 
-### SQL Execution Flow
-`KeboolaStatement.execute(sql)` → `QueryServiceClient.submitJob()` → poll `waitForCompletion()` with exponential backoff (100ms→2s) → `fetchResults()` (paginated, 1000 rows/page) → `KeboolaResultSet` (lazy paging)
+### QueryBackend Abstraction
+`QueryBackend` interface abstracts SQL execution. Two implementations:
+- **`QueryServiceBackend`** — wraps `QueryServiceClient` (async HTTP API: submit→poll→fetch). Backend engine (Snowflake, etc.) transparent.
+- **`DuckDbBackend`** — wraps embedded DuckDB JDBC (synchronous, local). Zero cloud dependency.
+
+Runtime switching via `KEBOOLA USE BACKEND duckdb|queryservice` command.
+Data seeding via `KEBOOLA PULL TABLE stage.bucket.table [AS name]` and `KEBOOLA PULL QUERY <sql> AS name` — pulls data from Query Service into DuckDB with automatic type mapping and batch inserts.
+
+### SQL Execution Flow (Query Service)
+`KeboolaStatement.execute(sql)` → `QueryServiceBackend.execute()` → `QueryServiceClient.submitJob()` → poll `waitForCompletion()` with exponential backoff (100ms→2s) → `fetchResults()` (paginated, 1000 rows/page) → `KeboolaResultSet` (lazy paging)
+
+### SQL Execution Flow (DuckDB)
+`KeboolaStatement.execute(sql)` → `DuckDbBackend.execute()` → DuckDB native `Statement.execute()` → native `ResultSet`
 
 ### Connection Setup Flow
-`KeboolaConnection(config)` → `StorageApiClient.verifyToken()` → `discoverQueryServiceUrl()` (from Storage API index) → `resolveBranchId()` (auto-detect default) → `resolveWorkspaceId()` (auto-select newest) → create `QueryServiceClient` → `initCatalogAndSchema()` (executes `SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()`)
+`KeboolaConnection(config)` → if token: `StorageApiClient.verifyToken()` → `discoverQueryServiceUrl()` → `resolveBranchId()` → `resolveWorkspaceId()` → create `QueryServiceBackend`; if backend=duckdb: create `DuckDbBackend` → `initCatalogAndSchema()` via active backend
 
 ### Key Patterns
-- **Metadata via SHOW commands**: `KeboolaDatabaseMetaData` executes `SHOW DATABASES`, `SHOW SCHEMAS`, `SHOW TABLES/VIEWS/OBJECTS`, and `SHOW COLUMNS` via the connection to proxy real Snowflake metadata. Column type info is parsed from JSON `data_type` field in `SHOW COLUMNS` output. Virtual `_keboola` schema is injected alongside real Snowflake schemas.
+- **Metadata via SHOW commands or native**: For Query Service, `KeboolaDatabaseMetaData` uses SHOW commands. For DuckDB, delegates to native `DatabaseMetaData`. Branch determined by `backend.getNativeMetaData()` returning null (SHOW) or non-null (native).
 - **USE SCHEMA/DATABASE interception**: `setCatalog()`/`setSchema()` execute `USE DATABASE`/`USE SCHEMA` commands on the server. Driver also intercepts USE statements in SQL.
 - **Virtual tables (`_keboola.*`)**: `VirtualTableMetadata` defines schema for `_keboola.components`, `_keboola.jobs`, `_keboola.events`, `_keboola.tables`, `_keboola.buckets`. Handled by `VirtualTableHandler` via `KeboolaCommandDispatcher`.
 - **All constants in `DriverConfig`**: Page sizes, timeouts, polling intervals, retry counts. Never hardcode values elsewhere.
 - **`ArrayResultSet`**: In-memory ResultSet used by `KeboolaDatabaseMetaData` for metadata queries (getSchemas, getTables, getColumns, etc.).
-- **Uber-jar via maven-shade-plugin**: OkHttp, Jackson, Kotlin runtime relocated under `com.keboola.jdbc.shaded.*` to avoid classpath conflicts with host applications.
+- **Uber-jar via maven-shade-plugin**: OkHttp, Jackson, Kotlin runtime relocated under `com.keboola.jdbc.shaded.*`. DuckDB JDBC is NOT relocated (native libs break with relocation).
 - **SPI registration**: `META-INF/services/java.sql.Driver` → `com.keboola.jdbc.KeboolaDriver`
 
 ### API Specifics
@@ -54,6 +66,7 @@ Java 11+. Surefire needs `-Dnet.bytebuddy.experimental=true` (already configured
 
 ## Testing
 
-- Unit tests in `src/test/java/com/keboola/jdbc/`: TypeMapperTest, ConnectionConfigTest, ArrayResultSetTest, KeboolaDriverTest, SchemaCacheTest
+- Unit tests in `src/test/java/com/keboola/jdbc/`: TypeMapperTest, ConnectionConfigTest, ConnectionConfigDuckDbTest, ArrayResultSetTest, KeboolaDriverTest, SchemaCacheTest, DuckDbBackendTest, QueryServiceBackendTest, BackendSwitchHandlerTest
+- Integration tests: `DuckDbDriverIT` (no token needed), `BackendSwitchIT` (no token needed), `KeboolaDriverIT` (needs KEBOOLA_TOKEN)
 - `ManualConnectionTest` is a CLI integration test (not run by `mvn test`), needs `KEBOOLA_TOKEN` env var
-- Use JUnit 5 + Mockito 5.11
+- Use JUnit 5 + Mockito 5.11 + DuckDB JDBC 1.1.3

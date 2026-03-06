@@ -1,6 +1,5 @@
 package com.keboola.jdbc;
 
-import com.keboola.jdbc.http.QueryServiceClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,18 +61,11 @@ public class KeboolaPreparedStatement extends KeboolaStatement implements Prepar
     /**
      * Creates a new PreparedStatement for the given SQL template.
      *
-     * @param connection   the parent connection
-     * @param queryClient  HTTP client for the Keboola Query Service
-     * @param branchId     the branch ID to execute queries against
-     * @param workspaceId  the workspace ID to execute queries against
-     * @param sql          the SQL template with {@code ?} placeholders
+     * @param connection the parent connection
+     * @param sql        the SQL template with {@code ?} placeholders
      */
-    public KeboolaPreparedStatement(KeboolaConnection connection,
-                                    QueryServiceClient queryClient,
-                                    long branchId,
-                                    long workspaceId,
-                                    String sql) {
-        super(connection, queryClient, branchId, workspaceId);
+    public KeboolaPreparedStatement(KeboolaConnection connection, String sql) {
+        super(connection);
         this.sqlTemplate = sql;
         LOG.debug("KeboolaPreparedStatement created: sql={}", sql);
     }

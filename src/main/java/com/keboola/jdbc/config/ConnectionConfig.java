@@ -32,13 +32,18 @@ public class ConnectionConfig {
     private final Long   branchId;
     private final Long   workspaceId;
     private final String schema;
+    private final String backend;
+    private final String duckdbPath;
 
-    private ConnectionConfig(String host, String token, Long branchId, Long workspaceId, String schema) {
+    private ConnectionConfig(String host, String token, Long branchId, Long workspaceId,
+                             String schema, String backend, String duckdbPath) {
         this.host        = host;
         this.token       = token;
         this.branchId    = branchId;
         this.workspaceId = workspaceId;
         this.schema      = schema;
+        this.backend     = backend;
+        this.duckdbPath  = duckdbPath;
     }
 
     /**
@@ -63,17 +68,47 @@ public class ConnectionConfig {
             );
         }
 
-        if (!VALID_HOSTNAME.matcher(host).matches()) {
+        Properties effectiveProps = props != null ? props : new Properties();
+
+        String backend = parseOptionalString(effectiveProps, "backend");
+        if (backend == null) {
+            backend = DriverConfig.DEFAULT_BACKEND;
+        }
+        if (!DriverConfig.BACKEND_QUERY_SERVICE.equals(backend)
+                && !DriverConfig.BACKEND_DUCKDB.equals(backend)) {
             throw KeboolaJdbcException.connectionFailed(
-                    "Invalid host in JDBC URL: '" + host + "'. "
-                    + "Only valid DNS hostnames are accepted (IP addresses and localhost are rejected)"
+                    "Invalid backend '" + backend + "'. Supported values: "
+                    + DriverConfig.BACKEND_QUERY_SERVICE + ", " + DriverConfig.BACKEND_DUCKDB
             );
         }
 
-        Properties effectiveProps = props != null ? props : new Properties();
+        boolean isDuckDb = DriverConfig.BACKEND_DUCKDB.equals(backend);
+        String duckdbPath = parseOptionalString(effectiveProps, "duckdbPath");
 
+        // Hostname validation: relaxed for DuckDB (allows localhost), strict for Query Service
+        if (isDuckDb) {
+            // DuckDB allows localhost and simple hostnames
+            if (!VALID_HOSTNAME.matcher(host).matches() && !"localhost".equalsIgnoreCase(host)) {
+                throw KeboolaJdbcException.connectionFailed(
+                        "Invalid host in JDBC URL: '" + host + "'. "
+                        + "Only valid DNS hostnames or 'localhost' are accepted"
+                );
+            }
+        } else {
+            if (!VALID_HOSTNAME.matcher(host).matches()) {
+                throw KeboolaJdbcException.connectionFailed(
+                        "Invalid host in JDBC URL: '" + host + "'. "
+                        + "Only valid DNS hostnames are accepted (IP addresses and localhost are rejected)"
+                );
+            }
+        }
+
+        // Token: required for Query Service, optional for DuckDB
         String token = effectiveProps.getProperty("token");
-        if (token == null || token.trim().isEmpty()) {
+        if (token != null && token.trim().isEmpty()) {
+            token = null;
+        }
+        if (token == null && !isDuckDb) {
             throw KeboolaJdbcException.authenticationFailed(
                     "Property 'token' is required but was not provided"
             );
@@ -83,7 +118,8 @@ public class ConnectionConfig {
         Long workspaceId = parseOptionalLong(effectiveProps, "workspace");
         String schema    = parseOptionalString(effectiveProps, "schema");
 
-        return new ConnectionConfig(host, token.trim(), branchId, workspaceId, schema);
+        return new ConnectionConfig(host, token != null ? token.trim() : null,
+                branchId, workspaceId, schema, backend, duckdbPath);
     }
 
     /**
@@ -167,9 +203,38 @@ public class ConnectionConfig {
         return schema;
     }
 
+    /**
+     * Returns the backend type: "queryservice" (default) or "duckdb".
+     */
+    public String getBackend() {
+        return backend;
+    }
+
+    /**
+     * Returns the DuckDB database file path, or null for in-memory mode.
+     */
+    public String getDuckDbPath() {
+        return duckdbPath;
+    }
+
+    /**
+     * Returns true if the backend is DuckDB.
+     */
+    public boolean isDuckDb() {
+        return DriverConfig.BACKEND_DUCKDB.equals(backend);
+    }
+
+    /**
+     * Returns true if a token is available (needed for Query Service and virtual tables).
+     */
+    public boolean hasToken() {
+        return token != null;
+    }
+
     @Override
     public String toString() {
-        return "ConnectionConfig{host='" + host + "', branchId=" + branchId
-                + ", workspaceId=" + workspaceId + ", schema=" + schema + "}";
+        return "ConnectionConfig{host='" + host + "', backend=" + backend
+                + ", branchId=" + branchId + ", workspaceId=" + workspaceId
+                + ", schema=" + schema + ", duckdbPath=" + duckdbPath + "}";
     }
 }

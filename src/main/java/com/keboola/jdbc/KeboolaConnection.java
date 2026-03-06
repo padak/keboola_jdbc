@@ -1,17 +1,18 @@
 package com.keboola.jdbc;
 
+import com.keboola.jdbc.backend.DuckDbBackend;
+import com.keboola.jdbc.backend.QueryBackend;
+import com.keboola.jdbc.backend.QueryServiceBackend;
 import com.keboola.jdbc.config.ConnectionConfig;
+import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.JobQueueClient;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.Branch;
-import com.keboola.jdbc.http.model.JobStatus;
-import com.keboola.jdbc.http.model.QueryJob;
-import com.keboola.jdbc.http.model.QueryResult;
-import com.keboola.jdbc.http.model.StatementStatus;
 import com.keboola.jdbc.http.model.TokenInfo;
 import com.keboola.jdbc.http.model.Workspace;
+import com.keboola.jdbc.logging.SqlSessionLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,11 +59,18 @@ public class KeboolaConnection implements Connection {
     private static final Logger LOG = LoggerFactory.getLogger(KeboolaConnection.class);
 
     private final String host;
+    private final ConnectionConfig config;
     private final StorageApiClient storageClient;
-    private final QueryServiceClient queryClient;
     private final TokenInfo tokenInfo;
-    private final long branchId;
-    private final long workspaceId;
+
+    /** Currently active backend for SQL execution. */
+    private QueryBackend activeBackend;
+
+    /** Query Service backend - null if no token provided. */
+    private QueryServiceBackend queryServiceBackend;
+
+    /** DuckDB backend - null unless backend=duckdb or lazily created on switch. */
+    private DuckDbBackend duckDbBackend;
 
     private boolean closed = false;
     private boolean autoCommit = true;
@@ -72,6 +80,9 @@ public class KeboolaConnection implements Connection {
 
     /** Lazy-initialized Job Queue client (created on first access to _keboola.jobs). */
     private volatile JobQueueClient jobQueueClient;
+
+    /** Lazy-initialized session logger for SQL execution tracking (requires DuckDB backend). */
+    private SqlSessionLogger sessionLogger;
 
     /**
      * Query Service session ID. Generated on connection init and sent with every job.
@@ -88,31 +99,48 @@ public class KeboolaConnection implements Connection {
      * @throws SQLException if token verification, service discovery, or branch/workspace resolution fails
      */
     public KeboolaConnection(ConnectionConfig config) throws SQLException {
-        LOG.info("Connecting to Keboola: host={}", config.getHost());
+        LOG.info("Connecting to Keboola: host={}, backend={}", config.getHost(), config.getBackend());
 
         try {
             this.host = config.getHost();
-            storageClient = new StorageApiClient(config.getHost(), config.getToken());
-            tokenInfo = verifyToken();
-            String queryServiceUrl = discoverQueryServiceUrl();
-            queryClient = new QueryServiceClient(queryServiceUrl, config.getToken());
-            branchId = resolveBranchId(config);
-            workspaceId = resolveWorkspaceId(config);
+            this.config = config;
 
-            // Generate session ID — sent with every job so that SET, USE SCHEMA,
-            // temp tables etc. persist across execute() calls
-            this.sessionId = UUID.randomUUID().toString();
+            // Initialize Query Service backend if token is provided
+            if (config.hasToken()) {
+                storageClient = new StorageApiClient(config.getHost(), config.getToken());
+                tokenInfo = verifyToken();
+                String queryServiceUrl = discoverQueryServiceUrl();
+                QueryServiceClient queryClient = new QueryServiceClient(queryServiceUrl, config.getToken());
+                long branchId = resolveBranchId(config);
+                long workspaceId = resolveWorkspaceId(config);
+
+                this.sessionId = UUID.randomUUID().toString();
+                this.queryServiceBackend = new QueryServiceBackend(queryClient, branchId, workspaceId, sessionId);
+            } else {
+                storageClient = null;
+                tokenInfo = null;
+                this.sessionId = null;
+            }
+
+            // Initialize DuckDB backend if requested
+            if (config.isDuckDb()) {
+                String duckdbPath = config.getDuckDbPath() != null ? config.getDuckDbPath() : ":memory:";
+                this.duckDbBackend = new DuckDbBackend(duckdbPath);
+                this.activeBackend = duckDbBackend;
+            } else {
+                this.activeBackend = queryServiceBackend;
+            }
 
             // Apply default schema from connection config if provided
             if (config.getSchema() != null) {
                 this.currentSchema = config.getSchema();
             }
 
-            // Discover current database and schema from the server
+            // Discover current database and schema from the active backend
             initCatalogAndSchema();
 
-            LOG.info("Connected: catalog='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
-                    catalog, branchId, workspaceId, currentSchema, sessionId);
+            LOG.info("Connected: catalog='{}', schema={}, backend={}, sessionId={}",
+                    catalog, currentSchema, activeBackend.getBackendType(), sessionId);
 
         } catch (KeboolaJdbcException e) {
             throw new SQLException("Failed to connect to Keboola: " + e.getMessage(), e);
@@ -158,38 +186,22 @@ public class KeboolaConnection implements Connection {
     }
 
     /**
-     * Queries the server for CURRENT_DATABASE() and CURRENT_SCHEMA() to initialize
+     * Queries the active backend for current database and schema to initialize
      * the catalog and schema fields. If a schema was specified via connection config,
-     * executes USE SCHEMA first.
+     * sets it on the backend first.
      */
     private void initCatalogAndSchema() throws SQLException {
         try {
-            String initSql;
             if (currentSchema != null && !currentSchema.isEmpty()) {
-                initSql = "USE SCHEMA \"" + currentSchema.replace("\"", "\"\"")
-                        + "\"; SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()";
-            } else {
-                initSql = "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()";
+                activeBackend.setSchema(currentSchema);
             }
 
-            List<String> stmts = KeboolaStatement.splitStatements(initSql);
-            QueryJob job = queryClient.submitJob(branchId, workspaceId, stmts, sessionId);
-            JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
-
-            StatementStatus lastStmt = jobStatus.getStatements().get(jobStatus.getStatements().size() - 1);
-            QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStmt.getId(), 0, 100);
-
-            if (result.getData() != null && !result.getData().isEmpty()) {
-                List<String> row = result.getData().get(0);
-                if (row.size() >= 2) {
-                    String db = row.get(0);
-                    String sch = row.get(1);
-                    if (db != null) this.catalog = db;
-                    if (sch != null) this.currentSchema = sch;
-                }
-            }
+            String db = activeBackend.getCurrentCatalog();
+            String sch = activeBackend.getCurrentSchema();
+            if (db != null) this.catalog = db;
+            if (sch != null) this.currentSchema = sch;
         } catch (Exception e) {
-            LOG.warn("Failed to discover current database/schema from server: {}", e.getMessage());
+            LOG.warn("Failed to discover current database/schema from backend: {}", e.getMessage());
         }
     }
 
@@ -223,7 +235,7 @@ public class KeboolaConnection implements Connection {
     @Override
     public Statement createStatement() throws SQLException {
         checkClosed();
-        return new KeboolaStatement(this, queryClient, branchId, workspaceId);
+        return new KeboolaStatement(this);
     }
 
     @Override
@@ -244,7 +256,7 @@ public class KeboolaConnection implements Connection {
     @Override
     public PreparedStatement prepareStatement(String sql) throws SQLException {
         checkClosed();
-        return new KeboolaPreparedStatement(this, queryClient, branchId, workspaceId, sql);
+        return new KeboolaPreparedStatement(this, sql);
     }
 
     @Override
@@ -315,6 +327,12 @@ public class KeboolaConnection implements Connection {
     public void close() throws SQLException {
         if (!closed) {
             closed = true;
+            if (queryServiceBackend != null) {
+                queryServiceBackend.close();
+            }
+            if (duckDbBackend != null) {
+                duckDbBackend.close();
+            }
             LOG.info("KeboolaConnection closed");
         }
     }
@@ -344,9 +362,7 @@ public class KeboolaConnection implements Connection {
         checkClosed();
         if (catalog == null) return;
         LOG.debug("setCatalog({})", catalog);
-        try (Statement stmt = createStatement()) {
-            stmt.execute("USE DATABASE \"" + catalog.replace("\"", "\"\"") + "\"");
-        }
+        activeBackend.setCatalog(catalog);
         this.catalog = catalog;
     }
 
@@ -360,9 +376,7 @@ public class KeboolaConnection implements Connection {
         checkClosed();
         LOG.debug("setSchema({})", schema);
         if (schema != null) {
-            try (Statement stmt = createStatement()) {
-                stmt.execute("USE SCHEMA \"" + schema.replace("\"", "\"\"") + "\"");
-            }
+            activeBackend.setSchema(schema);
         }
         this.currentSchema = schema;
     }
@@ -543,16 +557,55 @@ public class KeboolaConnection implements Connection {
 
     public String getHost() { return host; }
 
-    /** Returns the Storage API client (used by virtual table handlers). */
+    /** Returns the Storage API client (used by virtual table handlers). May be null in DuckDB-only mode. */
     public StorageApiClient getStorageClient() { return storageClient; }
 
-    public QueryServiceClient getQueryClient() { return queryClient; }
+    /** Returns the currently active backend for SQL execution. */
+    public QueryBackend getBackend() { return activeBackend; }
+
+    /** Returns the Query Service backend, or null if no token was provided. */
+    public QueryServiceBackend getQueryServiceBackend() { return queryServiceBackend; }
+
+    /** Returns the DuckDB backend, or null if not initialized. */
+    public DuckDbBackend getDuckDbBackend() { return duckDbBackend; }
 
     public TokenInfo getTokenInfo() { return tokenInfo; }
 
-    public long getBranchId() { return branchId; }
+    /** Returns the connection configuration. */
+    public ConnectionConfig getConfig() { return config; }
 
-    public long getWorkspaceId() { return workspaceId; }
+    /**
+     * Switches the active backend at runtime.
+     *
+     * @param backendType "queryservice" or "duckdb"
+     * @throws SQLException if the target backend is not available
+     */
+    public void switchBackend(String backendType) throws SQLException {
+        if (DriverConfig.BACKEND_QUERY_SERVICE.equals(backendType)) {
+            if (queryServiceBackend == null) {
+                throw new SQLException(
+                        "Cannot switch to Query Service backend: no Keboola token was provided");
+            }
+            this.activeBackend = queryServiceBackend;
+        } else if (DriverConfig.BACKEND_DUCKDB.equals(backendType)) {
+            if (duckDbBackend == null) {
+                // Lazy-create DuckDB backend (in-memory or from config path)
+                String duckdbPath = config.getDuckDbPath() != null ? config.getDuckDbPath() : ":memory:";
+                LOG.info("Lazy-creating DuckDB backend: path={}", duckdbPath);
+                try {
+                    this.duckDbBackend = new DuckDbBackend(duckdbPath);
+                } catch (Exception e) {
+                    throw new SQLException("Failed to create DuckDB backend (path=" + duckdbPath + "): "
+                            + e.getMessage(), e);
+                }
+            }
+            this.activeBackend = duckDbBackend;
+        } else {
+            throw new SQLException("Unknown backend type: " + backendType
+                    + ". Supported: " + DriverConfig.BACKEND_QUERY_SERVICE + ", " + DriverConfig.BACKEND_DUCKDB);
+        }
+        LOG.info("Backend switched to: {}", backendType);
+    }
 
     /**
      * Returns the Job Queue API client, lazily discovering the service URL on first access.
@@ -576,6 +629,17 @@ public class KeboolaConnection implements Connection {
     }
 
     public String getSessionId() { return sessionId; }
+
+    /**
+     * Returns the session logger, lazily creating it if a DuckDB backend is available.
+     * Returns null if no DuckDB backend is available.
+     */
+    public SqlSessionLogger getSessionLogger() {
+        if (sessionLogger == null && duckDbBackend != null) {
+            sessionLogger = new SqlSessionLogger(duckDbBackend);
+        }
+        return sessionLogger;
+    }
 
     // -------------------------------------------------------------------------
     // Private helpers

@@ -13,9 +13,20 @@ public final class DriverConfig {
     // --- Driver identity ---
 
     public static final String DRIVER_NAME    = "Keboola JDBC Driver";
-    public static final String DRIVER_VERSION = "2.1.0";
-    public static final int    MAJOR_VERSION  = 2;
-    public static final int    MINOR_VERSION  = 1;
+    public static final String DRIVER_VERSION = "3.0.1-experimental";
+    public static final int    MAJOR_VERSION  = 3;
+    public static final int    MINOR_VERSION  = 0;
+
+    // --- Backend types ---
+
+    /** Backend type for the Keboola Query Service (async HTTP API). */
+    public static final String BACKEND_QUERY_SERVICE = "queryservice";
+
+    /** Backend type for embedded DuckDB (local JDBC). */
+    public static final String BACKEND_DUCKDB = "duckdb";
+
+    /** Default backend when not specified in connection properties. */
+    public static final String DEFAULT_BACKEND = BACKEND_QUERY_SERVICE;
 
     // --- JDBC URL ---
 
@@ -53,6 +64,16 @@ public final class DriverConfig {
 
     /** Default row limit for virtual table queries when no LIMIT is specified. */
     public static final int VIRTUAL_TABLE_DEFAULT_LIMIT = 100;
+
+    // --- Push command ---
+
+    /** Number of rows per INSERT statement when pushing data to Snowflake via Query Service. */
+    public static final int PUSH_BATCH_SIZE = 100;
+
+    // --- Session logging ---
+
+    /** System table name for SQL session logging (stored in DuckDB). */
+    public static final String SESSION_LOG_TABLE = "_keboola_session_log";
 
     // --- Filtered databases ---
 

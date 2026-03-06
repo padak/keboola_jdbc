@@ -137,6 +137,21 @@ public class KeboolaDriver implements Driver {
         props.add(branchProp);
         props.add(workspaceProp);
 
+        // --- backend property ---
+        String backendValue = effectiveInfo.getProperty("backend", DriverConfig.DEFAULT_BACKEND);
+        DriverPropertyInfo backendProp = new DriverPropertyInfo("backend", backendValue);
+        backendProp.required = false;
+        backendProp.description = "Execution backend: 'queryservice' (cloud, default) or 'duckdb' (local)";
+        backendProp.choices = new String[]{DriverConfig.BACKEND_QUERY_SERVICE, DriverConfig.BACKEND_DUCKDB};
+        props.add(backendProp);
+
+        // --- duckdbPath property ---
+        String duckdbPathValue = effectiveInfo.getProperty("duckdbPath", "");
+        DriverPropertyInfo duckdbPathProp = new DriverPropertyInfo("duckdbPath", duckdbPathValue);
+        duckdbPathProp.required = false;
+        duckdbPathProp.description = "Path to DuckDB database file (empty = in-memory)";
+        props.add(duckdbPathProp);
+
         return props.toArray(new DriverPropertyInfo[0]);
     }
 

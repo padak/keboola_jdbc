@@ -21,6 +21,10 @@ public class KeboolaCommandDispatcher {
     private final List<KeboolaCommandHandler> handlers = new ArrayList<>();
 
     public KeboolaCommandDispatcher() {
+        handlers.add(new BackendSwitchHandler());
+        handlers.add(new PullCommandHandler());
+        handlers.add(new PushCommandHandler());
+        handlers.add(new SessionLogHandler());
         handlers.add(new HelpCommandHandler());
         handlers.add(new VirtualTableHandler());
     }

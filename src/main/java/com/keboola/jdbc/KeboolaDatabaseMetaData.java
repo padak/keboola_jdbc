@@ -85,6 +85,14 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     @Override
     public ResultSet getCatalogs() throws SQLException {
         LOG.debug("getCatalogs()");
+
+        // DuckDB: delegate to native metadata
+        DatabaseMetaData nativeMeta = connection.getBackend().getNativeMetaData();
+        if (nativeMeta != null) {
+            return nativeMeta.getCatalogs();
+        }
+
+        // Query Service: use SHOW commands
         List<String> columns = Collections.singletonList("TABLE_CAT");
         List<List<Object>> rows = new ArrayList<>();
 
@@ -110,6 +118,14 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     @Override
     public ResultSet getSchemas(String catalog, String schemaPattern) throws SQLException {
         LOG.debug("getSchemas(catalog={}, schemaPattern={})", catalog, schemaPattern);
+
+        // DuckDB: delegate to native metadata
+        DatabaseMetaData nativeMeta = connection.getBackend().getNativeMetaData();
+        if (nativeMeta != null) {
+            return nativeMeta.getSchemas(catalog, schemaPattern);
+        }
+
+        // Query Service: use SHOW commands + virtual schemas
         List<String> columns = Arrays.asList("TABLE_SCHEM", "TABLE_CATALOG");
 
         if ("".equals(catalog)) {
@@ -157,6 +173,13 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     public ResultSet getTables(String catalog, String schemaPattern, String tableNamePattern, String[] types) throws SQLException {
         LOG.debug("getTables(catalog={}, schema={}, table={}, types={})", catalog, schemaPattern, tableNamePattern, types != null ? Arrays.toString(types) : "null");
 
+        // DuckDB: delegate to native metadata
+        DatabaseMetaData nativeMeta = connection.getBackend().getNativeMetaData();
+        if (nativeMeta != null) {
+            return nativeMeta.getTables(catalog, schemaPattern, tableNamePattern, types);
+        }
+
+        // Query Service: use SHOW commands + virtual tables
         List<String> columns = Arrays.asList(
                 "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
                 "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"
@@ -265,6 +288,13 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     public ResultSet getColumns(String catalog, String schemaPattern, String tableNamePattern, String columnNamePattern) throws SQLException {
         LOG.debug("getColumns(catalog={}, schema={}, table={}, column={})", catalog, schemaPattern, tableNamePattern, columnNamePattern);
 
+        // DuckDB: delegate to native metadata
+        DatabaseMetaData nativeMeta = connection.getBackend().getNativeMetaData();
+        if (nativeMeta != null) {
+            return nativeMeta.getColumns(catalog, schemaPattern, tableNamePattern, columnNamePattern);
+        }
+
+        // Query Service: use SHOW COLUMNS + virtual table columns
         List<String> columns = Arrays.asList(
                 "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME",
                 "DATA_TYPE", "TYPE_NAME", "COLUMN_SIZE", "BUFFER_LENGTH",

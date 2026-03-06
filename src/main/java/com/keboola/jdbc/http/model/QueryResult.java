@@ -90,4 +90,16 @@ public class QueryResult {
     public boolean isHasMorePages() {
         return hasMorePages;
     }
+
+    /**
+     * Computes hasMorePages from the current offset, data size, and total numberOfRows.
+     * The Query Service API does not return a hasMorePages field, so we derive it.
+     *
+     * @param offset the zero-based row offset used when fetching this page
+     */
+    public void computeHasMorePages(int offset) {
+        if (numberOfRows != null && data != null) {
+            this.hasMorePages = (offset + data.size()) < numberOfRows;
+        }
+    }
 }

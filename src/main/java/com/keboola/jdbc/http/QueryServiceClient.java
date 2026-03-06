@@ -203,7 +203,9 @@ public class QueryServiceClient {
                 + "/results?offset=" + offset + "&pageSize=" + pageSize;
         LOG.debug("Fetching results (compat): {} (offset={}, pageSize={})", url, offset, pageSize);
         String body = executeGet(url);
-        return deserialize(body, com.keboola.jdbc.http.model.QueryResult.class);
+        com.keboola.jdbc.http.model.QueryResult result = deserialize(body, com.keboola.jdbc.http.model.QueryResult.class);
+        result.computeHasMorePages(offset);
+        return result;
     }
 
     /**
@@ -225,7 +227,10 @@ public class QueryServiceClient {
                 + "/results?offset=" + offset + "&pageSize=" + pageSize;
         LOG.debug("Fetching results: {} (offset={}, pageSize={})", url, offset, pageSize);
         String body = executeGet(url);
-        return deserialize(body, QueryResult.class);
+        QueryResult result = deserialize(body, QueryResult.class);
+        // API does not return hasMorePages — compute it from offset, data size, and total row count
+        result.computeHasMorePages(offset);
+        return result;
     }
 
     /**

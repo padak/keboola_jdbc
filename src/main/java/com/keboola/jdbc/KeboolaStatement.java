@@ -1,12 +1,8 @@
 package com.keboola.jdbc;
 
+import com.keboola.jdbc.backend.ExecutionResult;
 import com.keboola.jdbc.command.KeboolaCommandDispatcher;
-import com.keboola.jdbc.exception.KeboolaJdbcException;
-import com.keboola.jdbc.http.QueryServiceClient;
-import com.keboola.jdbc.http.model.JobStatus;
-import com.keboola.jdbc.http.model.QueryJob;
-import com.keboola.jdbc.http.model.QueryResult;
-import com.keboola.jdbc.http.model.StatementStatus;
+import com.keboola.jdbc.logging.SqlSessionLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,15 +34,9 @@ public class KeboolaStatement implements Statement {
     private static final Logger LOG = LoggerFactory.getLogger(KeboolaStatement.class);
 
     protected final KeboolaConnection connection;
-    protected final QueryServiceClient queryClient;
-    protected final long branchId;
-    protected final long workspaceId;
-
-    /** The job ID of the most recently submitted query, used for cancellation. */
-    protected String currentJobId;
 
     /** The current open result set, if the last execution returned rows. */
-    protected KeboolaResultSet currentResultSet;
+    protected ResultSet currentResultSet;
 
     /** ResultSet from a custom command (KEBOOLA HELP, virtual tables). Mutually exclusive with currentResultSet. */
     protected ResultSet currentCustomResultSet;
@@ -82,19 +72,10 @@ public class KeboolaStatement implements Statement {
     /**
      * Creates a new statement for the given connection.
      *
-     * @param connection   the parent connection
-     * @param queryClient  HTTP client for the Keboola Query Service
-     * @param branchId     the branch ID to execute queries against
-     * @param workspaceId  the workspace ID to execute queries against
+     * @param connection the parent connection
      */
-    public KeboolaStatement(KeboolaConnection connection,
-                            QueryServiceClient queryClient,
-                            long branchId,
-                            long workspaceId) {
+    public KeboolaStatement(KeboolaConnection connection) {
         this.connection = connection;
-        this.queryClient = queryClient;
-        this.branchId = branchId;
-        this.workspaceId = workspaceId;
     }
 
     // -------------------------------------------------------------------------
@@ -112,7 +93,7 @@ public class KeboolaStatement implements Statement {
         // Intercept USE SCHEMA/DATABASE commands locally (also sent to server via session)
         interceptUseCommand(sql);
 
-        // Intercept custom Keboola commands (HELP, virtual tables) before sending to Query Service
+        // Intercept custom Keboola commands (HELP, virtual tables) before sending to backend
         ResultSet customResult = commandDispatcher.tryHandle(sql, connection);
         if (customResult != null) {
             currentResultSet = null;
@@ -128,64 +109,35 @@ public class KeboolaStatement implements Statement {
             return false;
         }
 
+        // Delegate to the active backend with session logging
+        String backendType = connection.getBackend().getBackendType();
+        SqlSessionLogger sessionLogger = connection.getSessionLogger();
+        long startTime = System.currentTimeMillis();
+
         try {
-            // On first job (no session yet), prepend USE SCHEMA if set from connection property
-            if (connection.getSessionId() == null) {
-                String schema = connection.getSchema();
-                if (schema != null && !schema.isEmpty()) {
-                    String useSchema = "USE SCHEMA \"" + schema + "\"";
-                    LOG.debug("First job — prepending schema from connection property: {}", useSchema);
-                    statements.add(0, useSchema);
+            ExecutionResult result = connection.getBackend().execute(statements);
+            long durationMs = System.currentTimeMillis() - startTime;
+
+            if (result.hasResultSet()) {
+                currentResultSet = result.getResultSet();
+                if (sessionLogger != null) {
+                    sessionLogger.log(backendType, sql, true, null, durationMs, -1);
                 }
-            }
-
-            // Submit job with session ID — the server-side session preserves
-            // SET variables, USE SCHEMA, temp tables across jobs
-            QueryJob job = queryClient.submitJob(branchId, workspaceId, statements, connection.getSessionId());
-            currentJobId = job.getQueryJobId();
-
-            JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
-
-            List<StatementStatus> stmtStatuses = jobStatus.getStatements();
-            if (stmtStatuses == null || stmtStatuses.isEmpty()) {
-                throw new KeboolaJdbcException("Job " + job.getQueryJobId() + " returned no statement results");
-            }
-
-            // Check all statements for errors
-            for (StatementStatus s : stmtStatuses) {
-                processStatementStatus(s);
-            }
-
-            // The last statement determines the result type
-            StatementStatus lastStatus = stmtStatuses.get(stmtStatuses.size() - 1);
-            String lastSql = statements.get(statements.size() - 1).trim().toUpperCase();
-
-            Integer numRows = lastStatus.getNumberOfRows();
-            boolean isSelect = numRows != null && numRows > 0;
-
-            if (!isSelect) {
-                isSelect = lastSql.startsWith("SELECT")
-                        || lastSql.startsWith("SHOW")
-                        || lastSql.startsWith("DESCRIBE")
-                        || lastSql.startsWith("WITH");
-            }
-
-            if (isSelect) {
-                currentResultSet = fetchFirstPage(job.getQueryJobId(), lastStatus.getId());
                 return true;
             } else {
-                Integer affected = lastStatus.getRowsAffected();
-                updateCount = affected != null ? affected : 0;
+                updateCount = result.getUpdateCount();
                 currentResultSet = null;
+                if (sessionLogger != null) {
+                    sessionLogger.log(backendType, sql, true, null, durationMs, updateCount);
+                }
                 return false;
             }
-
-        } catch (KeboolaJdbcException e) {
-            throw new SQLException(e.getMessage(), e);
         } catch (SQLException e) {
+            long durationMs = System.currentTimeMillis() - startTime;
+            if (sessionLogger != null) {
+                sessionLogger.log(backendType, sql, false, e.getMessage(), durationMs, -1);
+            }
             throw e;
-        } catch (Exception e) {
-            throw new SQLException("Unexpected error executing SQL: " + e.getMessage(), e);
         }
     }
 
@@ -206,42 +158,6 @@ public class KeboolaStatement implements Statement {
             return 0;
         }
         return updateCount >= 0 ? updateCount : 0;
-    }
-
-    // -------------------------------------------------------------------------
-    // Execution sub-steps
-    // -------------------------------------------------------------------------
-
-    // buildStatements removed — with server-side sessions, no preamble needed.
-    // SET, USE SCHEMA, temp tables all persist in the session automatically.
-
-    /**
-     * Validates that the statement completed successfully.
-     *
-     * @param status the terminal statement status
-     * @throws KeboolaJdbcException if the statement failed or was canceled
-     */
-    private void processStatementStatus(StatementStatus status) throws KeboolaJdbcException {
-        if ("failed".equals(status.getStatus())) {
-            throw new KeboolaJdbcException("Query execution failed: " + status.getError());
-        }
-        if ("canceled".equals(status.getStatus())) {
-            throw new KeboolaJdbcException("Query was canceled");
-        }
-    }
-
-    /**
-     * Fetches the first page of results for the given statement and wraps it in a
-     * {@link KeboolaResultSet}.
-     *
-     * @param jobId       the query job ID (used for cancel support)
-     * @param statementId the statement ID used for paging
-     * @return the first-page KeboolaResultSet
-     * @throws Exception if fetching fails
-     */
-    private KeboolaResultSet fetchFirstPage(String jobId, String statementId) throws Exception {
-        QueryResult firstPage = queryClient.fetchResults(jobId, statementId, 0, KeboolaResultSet.PAGE_SIZE);
-        return new KeboolaResultSet(queryClient, jobId, statementId, firstPage);
     }
 
     // -------------------------------------------------------------------------
@@ -288,14 +204,7 @@ public class KeboolaStatement implements Statement {
     @Override
     public void cancel() throws SQLException {
         checkClosed();
-        if (currentJobId != null) {
-            LOG.debug("Canceling job: jobId={}", currentJobId);
-            try {
-                queryClient.cancelJob(currentJobId);
-            } catch (Exception e) {
-                throw new SQLException("Failed to cancel job " + currentJobId + ": " + e.getMessage(), e);
-            }
-        }
+        connection.getBackend().cancel();
     }
 
     // -------------------------------------------------------------------------

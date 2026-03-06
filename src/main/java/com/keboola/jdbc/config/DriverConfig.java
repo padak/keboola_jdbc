@@ -13,7 +13,7 @@ public final class DriverConfig {
     // --- Driver identity ---
 
     public static final String DRIVER_NAME    = "Keboola JDBC Driver";
-    public static final String DRIVER_VERSION = "2.0.0";
+    public static final String DRIVER_VERSION = "2.0.1";
     public static final int    MAJOR_VERSION  = 2;
     public static final int    MINOR_VERSION  = 0;
 
@@ -53,5 +53,12 @@ public final class DriverConfig {
 
     /** Default row limit for virtual table queries when no LIMIT is specified. */
     public static final int VIRTUAL_TABLE_DEFAULT_LIMIT = 100;
+
+    // --- Filtered databases ---
+
+    /** Snowflake system databases that should be hidden from the sidebar. */
+    public static final java.util.Set<String> FILTERED_DATABASES = java.util.Collections.unmodifiableSet(
+            new java.util.HashSet<>(java.util.Arrays.asList("SNOWFLAKE", "SNOWFLAKE_LEARNING_DB"))
+    );
 
 }

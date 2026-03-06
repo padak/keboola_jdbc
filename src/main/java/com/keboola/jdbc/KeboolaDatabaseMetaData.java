@@ -92,7 +92,9 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
              ResultSet rs = stmt.executeQuery("SHOW DATABASES")) {
             int nameIdx = findColumnIndex(rs, "name");
             while (rs.next()) {
-                rows.add(Collections.singletonList(rs.getString(nameIdx)));
+                String dbName = rs.getString(nameIdx);
+                if (isFilteredDatabase(dbName)) continue;
+                rows.add(Collections.singletonList(dbName));
             }
         }
 
@@ -139,6 +141,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
             while (rs.next()) {
                 String schemaName = rs.getString(nameIdx);
                 String dbName = rs.getString(dbIdx);
+                if (isFilteredDatabase(dbName)) continue;
                 if (matchesPattern(dbName, catalog)) {
                     rows.add(Arrays.asList(schemaName, dbName));
                 }
@@ -226,6 +229,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                     String dbName = rs.getString(dbIdx);
                     String kind = rs.getString(kindIdx);
 
+                    if (isFilteredDatabase(dbName)) continue;
                     if (!matchesPattern(schemaName, schemaPattern)) continue;
                     if (!matchesPattern(dbName, catalog)) continue;
 
@@ -336,6 +340,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                 String colName = rs.getString(colNameIdx);
                 String dataTypeJson = rs.getString(dataTypeIdx);
 
+                if (isFilteredDatabase(dbName)) continue;
                 if (!matchesPattern(schemaName, schemaPattern)) continue;
                 if (!matchesPattern(tableName, tableNamePattern)) continue;
                 if (!matchesPattern(dbName, catalog)) continue;
@@ -825,6 +830,10 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
     }
 
     // -- Helpers --
+
+    private boolean isFilteredDatabase(String dbName) {
+        return dbName != null && DriverConfig.FILTERED_DATABASES.contains(dbName.toUpperCase());
+    }
 
     private String escapeSingleQuoteForLike(String pattern) {
         return pattern.replace("'", "''");

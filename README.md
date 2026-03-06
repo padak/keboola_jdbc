@@ -22,7 +22,7 @@ All metadata (databases, schemas, tables, columns) comes from Snowflake SHOW com
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-2.0.0.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-2.0.1.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -77,7 +77,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.0.0.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.0.1.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -290,6 +290,10 @@ src/main/java/com/keboola/jdbc/
 - **David Esner** ([@davidesner](https://github.com/davidesner)) — architect of the Snowflake-native metadata layer (2.0.0). Replaced Storage API metadata with `SHOW` commands via Query Service, `initCatalogAndSchema()`, and server-side `USE DATABASE`/`USE SCHEMA`. See [PR #2](https://github.com/padak/keboola_jdbc/pull/2).
 
 ## Changelog
+
+### 2.0.1
+
+- **Filter system databases**: `SNOWFLAKE` and `SNOWFLAKE_LEARNING_DB` databases are hidden from the sidebar. These Snowflake system databases are not part of the Keboola project and were cluttering the database navigator.
 
 ### 2.0.0
 

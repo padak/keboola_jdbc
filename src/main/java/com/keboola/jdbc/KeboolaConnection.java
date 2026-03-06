@@ -367,6 +367,15 @@ public class KeboolaConnection implements Connection {
         this.currentSchema = schema;
     }
 
+    /**
+     * Updates the local schema field without executing USE SCHEMA on the server.
+     * Used by KeboolaStatement.interceptUseCommand() to keep local state in sync
+     * when a USE SCHEMA command is already being sent to the server via execute().
+     */
+    void updateLocalSchema(String schema) {
+        this.currentSchema = schema;
+    }
+
     // -------------------------------------------------------------------------
     // Auto-commit (always true - no transaction support)
     // -------------------------------------------------------------------------

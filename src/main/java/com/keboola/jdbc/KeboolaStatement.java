@@ -563,15 +563,17 @@ public class KeboolaStatement implements Statement {
      * Detects USE SCHEMA/DATABASE commands and updates the local schema tracking
      * on the connection (for getSchema() API). The command is still sent to the
      * server via the session — this only keeps local state in sync.
+     *
+     * Updates the field directly (not via setSchema()) to avoid recursion:
+     * setSchema() → execute() → interceptUseCommand() → setSchema() → ...
      */
-    private void interceptUseCommand(String sql) throws SQLException {
-        // Check each statement in the input for USE commands
+    private void interceptUseCommand(String sql) {
         for (String stmt : splitStatements(sql)) {
             Matcher matcher = USE_PATTERN.matcher(stmt);
             if (matcher.matches()) {
                 String name = matcher.group(1);
                 LOG.debug("Detected USE command - updating local schema to: {}", name);
-                connection.setSchema(name);
+                connection.updateLocalSchema(name);
             }
         }
     }

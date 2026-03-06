@@ -103,9 +103,14 @@ public class KeboolaConnection implements Connection {
             // temp tables etc. persist across execute() calls
             this.sessionId = UUID.randomUUID().toString();
 
-            // Apply default schema from connection config if provided
+            // Apply default schema from connection config by sending USE SCHEMA
+            // to the server session, so it persists across all subsequent queries
             if (config.getSchema() != null) {
                 this.currentSchema = config.getSchema();
+                String useSchema = "USE SCHEMA \"" + config.getSchema() + "\"";
+                LOG.debug("Setting initial schema via session: {}", useSchema);
+                queryClient.submitJob(branchId, workspaceId,
+                        java.util.Collections.singletonList(useSchema), sessionId);
             }
 
             // Discover current database and schema from the server
@@ -368,12 +373,19 @@ public class KeboolaConnection implements Connection {
     }
 
     /**
-     * Updates the local schema field without executing USE SCHEMA on the server.
-     * Used by KeboolaStatement.interceptUseCommand() to keep local state in sync
-     * when a USE SCHEMA command is already being sent to the server via execute().
+     * Updates the local schema from server response (backendContext).
+     * Does not execute any SQL — just stores the value reported by the server.
      */
-    void updateLocalSchema(String schema) {
+    void updateSchemaFromServer(String schema) {
         this.currentSchema = schema;
+    }
+
+    /**
+     * Updates the local catalog from server response (backendContext).
+     * Does not execute any SQL — just stores the value reported by the server.
+     */
+    void updateCatalogFromServer(String catalog) {
+        this.catalog = catalog;
     }
 
     // -------------------------------------------------------------------------

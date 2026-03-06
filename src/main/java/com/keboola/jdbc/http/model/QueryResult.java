@@ -43,6 +43,10 @@ public class QueryResult {
     @JsonProperty("hasMorePages")
     private boolean hasMorePages;
 
+    /** Backend context with current catalog/schema after execution. */
+    @JsonProperty("backendContext")
+    private BackendContext backendContext;
+
     /** No-arg constructor required by Jackson. */
     public QueryResult() {}
 
@@ -89,5 +93,10 @@ public class QueryResult {
     /** Returns true if there are more result pages available for fetching. */
     public boolean isHasMorePages() {
         return hasMorePages;
+    }
+
+    /** Returns the backend context (current catalog/schema) if present in the response. */
+    public BackendContext getBackendContext() {
+        return backendContext;
     }
 }

@@ -5,6 +5,7 @@ import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.model.JobStatus;
 import com.keboola.jdbc.http.model.QueryJob;
+import com.keboola.jdbc.http.model.BackendContext;
 import com.keboola.jdbc.http.model.QueryResult;
 import com.keboola.jdbc.http.model.StatementStatus;
 import org.slf4j.Logger;
@@ -18,8 +19,6 @@ import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * JDBC Statement implementation that submits SQL queries to the Keboola Query Service,
@@ -66,17 +65,6 @@ public class KeboolaStatement implements Statement {
     /** Query timeout in seconds (stored, passed to API where supported). */
     private int queryTimeout = 0;
 
-    /**
-     * Pattern to match USE SCHEMA/DATABASE commands.
-     * Captures the schema/database name with or without quotes.
-     * Examples: USE SCHEMA "in.c-main", USE DATABASE mydb, USE "in.c-test"
-     */
-    private static final Pattern USE_PATTERN = Pattern.compile(
-            "^\\s*USE\\s+(?:SCHEMA|DATABASE)?\\s*\"?([^\"\\s;]+)\"?\\s*;?\\s*$",
-            Pattern.CASE_INSENSITIVE
-    );
-
-
     private boolean closed = false;
 
     /**
@@ -109,9 +97,6 @@ public class KeboolaStatement implements Statement {
 
         LOG.debug("Executing SQL: {}", sql);
 
-        // Intercept USE SCHEMA/DATABASE commands locally (also sent to server via session)
-        interceptUseCommand(sql);
-
         // Intercept custom Keboola commands (HELP, virtual tables) before sending to Query Service
         ResultSet customResult = commandDispatcher.tryHandle(sql, connection);
         if (customResult != null) {
@@ -129,18 +114,6 @@ public class KeboolaStatement implements Statement {
         }
 
         try {
-            // On first job (no session yet), prepend USE SCHEMA if set from connection property
-            if (connection.getSessionId() == null) {
-                String schema = connection.getSchema();
-                if (schema != null && !schema.isEmpty()) {
-                    String useSchema = "USE SCHEMA \"" + schema + "\"";
-                    LOG.debug("First job — prepending schema from connection property: {}", useSchema);
-                    statements.add(0, useSchema);
-                }
-            }
-
-            // Submit job with session ID — the server-side session preserves
-            // SET variables, USE SCHEMA, temp tables across jobs
             QueryJob job = queryClient.submitJob(branchId, workspaceId, statements, connection.getSessionId());
             currentJobId = job.getQueryJobId();
 
@@ -172,8 +145,12 @@ public class KeboolaStatement implements Statement {
 
             if (isSelect) {
                 currentResultSet = fetchFirstPage(job.getQueryJobId(), lastStatus.getId());
+                updateSchemaFromBackendContext(currentResultSet.getFirstPageResult());
                 return true;
             } else {
+                // For non-SELECT statements, fetch the result to get backendContext
+                QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStatus.getId(), 0, 1);
+                updateSchemaFromBackendContext(result);
                 Integer affected = lastStatus.getRowsAffected();
                 updateCount = affected != null ? affected : 0;
                 currentResultSet = null;
@@ -211,9 +188,6 @@ public class KeboolaStatement implements Statement {
     // -------------------------------------------------------------------------
     // Execution sub-steps
     // -------------------------------------------------------------------------
-
-    // buildStatements removed — with server-side sessions, no preamble needed.
-    // SET, USE SCHEMA, temp tables all persist in the session automatically.
 
     /**
      * Validates that the statement completed successfully.
@@ -560,24 +534,22 @@ public class KeboolaStatement implements Statement {
     }
 
     /**
-     * Detects USE SCHEMA/DATABASE commands and updates the local schema tracking
-     * on the connection (for getSchema() API). The command is still sent to the
-     * server via the session — this only keeps local state in sync.
-     *
-     * Updates the field directly (not via setSchema()) to avoid recursion:
-     * setSchema() -> execute() -> interceptUseCommand() -> setSchema() -> ...
+     * Updates the connection's local schema/catalog from the backendContext
+     * returned by the Query Service in result responses.
      */
-    private void interceptUseCommand(String sql) {
-        for (String stmt : splitStatements(sql)) {
-            Matcher matcher = USE_PATTERN.matcher(stmt);
-            if (matcher.matches()) {
-                String name = matcher.group(1);
-                LOG.debug("Detected USE command - updating local schema to: {}", name);
-                connection.updateLocalSchema(name);
-            }
+    private void updateSchemaFromBackendContext(QueryResult result) {
+        if (result == null) return;
+        BackendContext ctx = result.getBackendContext();
+        if (ctx == null) return;
+        if (ctx.getSchema() != null) {
+            LOG.debug("Updating schema from backendContext: {}", ctx.getSchema());
+            connection.updateSchemaFromServer(ctx.getSchema());
+        }
+        if (ctx.getCatalog() != null) {
+            LOG.debug("Updating catalog from backendContext: {}", ctx.getCatalog());
+            connection.updateCatalogFromServer(ctx.getCatalog());
         }
     }
-
 
     private void checkClosed() throws SQLException {
         if (closed) {

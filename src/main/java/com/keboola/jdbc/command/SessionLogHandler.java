@@ -4,6 +4,7 @@ import com.keboola.jdbc.KeboolaConnection;
 import com.keboola.jdbc.backend.DuckDbBackend;
 import com.keboola.jdbc.backend.ExecutionResult;
 import com.keboola.jdbc.config.DriverConfig;
+import com.keboola.jdbc.logging.SqlSessionLogger;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -31,8 +32,11 @@ public class SessionLogHandler implements KeboolaCommandHandler {
     public ResultSet execute(String sql, KeboolaConnection connection) throws SQLException {
         DuckDbBackend duckDb = connection.getDuckDbBackend();
         if (duckDb == null) {
-            throw new SQLException("Session log requires DuckDB backend");
+            throw new SQLException("Session log is not available (DuckDB backend failed to initialize)");
         }
+
+        // Ensure the log table exists before querying (it's created lazily on first log entry)
+        connection.getSessionLogger().ensureInitialized();
 
         String query = "SELECT * FROM " + DriverConfig.SESSION_LOG_TABLE + " ORDER BY executed_at DESC";
         ExecutionResult result = duckDb.execute(List.of(query));

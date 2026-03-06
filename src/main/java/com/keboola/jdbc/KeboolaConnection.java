@@ -122,10 +122,14 @@ public class KeboolaConnection implements Connection {
                 this.sessionId = null;
             }
 
-            // Initialize DuckDB backend if requested
+            // Always initialize DuckDB backend (for session logging, PULL/PUSH, etc.)
+            // Uses user-specified path if backend=duckdb, otherwise in-memory
+            String duckdbPath = config.isDuckDb() && config.getDuckDbPath() != null
+                    ? config.getDuckDbPath() : ":memory:";
+            this.duckDbBackend = new DuckDbBackend(duckdbPath);
+
+            // Set active backend based on config
             if (config.isDuckDb()) {
-                String duckdbPath = config.getDuckDbPath() != null ? config.getDuckDbPath() : ":memory:";
-                this.duckDbBackend = new DuckDbBackend(duckdbPath);
                 this.activeBackend = duckDbBackend;
             } else {
                 this.activeBackend = queryServiceBackend;
@@ -631,11 +635,11 @@ public class KeboolaConnection implements Connection {
     public String getSessionId() { return sessionId; }
 
     /**
-     * Returns the session logger, lazily creating it if a DuckDB backend is available.
-     * Returns null if no DuckDB backend is available.
+     * Returns the session logger, lazily creating it on first access.
+     * DuckDB backend is always available (at least in-memory) so this never returns null.
      */
     public SqlSessionLogger getSessionLogger() {
-        if (sessionLogger == null && duckDbBackend != null) {
+        if (sessionLogger == null) {
             sessionLogger = new SqlSessionLogger(duckDbBackend);
         }
         return sessionLogger;

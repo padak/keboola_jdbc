@@ -44,6 +44,7 @@ class SqlSessionLoggerTest {
                      "SELECT * FROM " + DriverConfig.SESSION_LOG_TABLE)) {
 
             assertTrue(rs.next(), "Should have one row");
+            assertEquals(1, rs.getInt("id"));
             assertEquals("duckdb", rs.getString("backend"));
             assertEquals("SELECT 1", rs.getString("sql_text"));
             assertTrue(rs.getBoolean("success"));
@@ -74,7 +75,7 @@ class SqlSessionLoggerTest {
     }
 
     @Test
-    void log_multipleEntries_verifyOrder() throws SQLException {
+    void log_multipleEntries_autoIncrementIds() throws SQLException {
         logger.log("duckdb", "SELECT 1", true, null, 10, 1);
         logger.log("duckdb", "SELECT 2", true, null, 20, 2);
         logger.log("queryservice", "SELECT 3", false, "timeout", 30, -1);
@@ -82,10 +83,15 @@ class SqlSessionLoggerTest {
         Connection conn = backend.getNativeConnection();
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT COUNT(*) AS cnt FROM " + DriverConfig.SESSION_LOG_TABLE)) {
+                     "SELECT id FROM " + DriverConfig.SESSION_LOG_TABLE + " ORDER BY id")) {
 
             assertTrue(rs.next());
-            assertEquals(3, rs.getInt("cnt"));
+            assertEquals(1, rs.getInt("id"));
+            assertTrue(rs.next());
+            assertEquals(2, rs.getInt("id"));
+            assertTrue(rs.next());
+            assertEquals(3, rs.getInt("id"));
+            assertFalse(rs.next());
         }
     }
 

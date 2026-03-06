@@ -23,6 +23,7 @@ public class SqlSessionLogger {
 
     private static final String CREATE_TABLE_SQL =
             "CREATE TABLE IF NOT EXISTS " + DriverConfig.SESSION_LOG_TABLE + " (" +
+            "  id INTEGER PRIMARY KEY DEFAULT nextval('" + DriverConfig.SESSION_LOG_TABLE + "_seq'), " +
             "  executed_at TIMESTAMP DEFAULT current_timestamp, " +
             "  backend VARCHAR NOT NULL, " +
             "  sql_text VARCHAR NOT NULL, " +
@@ -31,6 +32,9 @@ public class SqlSessionLogger {
             "  duration_ms BIGINT, " +
             "  rows_affected BIGINT" +
             ")";
+
+    private static final String CREATE_SEQUENCE_SQL =
+            "CREATE SEQUENCE IF NOT EXISTS " + DriverConfig.SESSION_LOG_TABLE + "_seq START 1";
 
     private static final String INSERT_SQL =
             "INSERT INTO " + DriverConfig.SESSION_LOG_TABLE +
@@ -51,11 +55,13 @@ public class SqlSessionLogger {
 
     /**
      * Creates the log table if it does not exist yet. Thread-safe via synchronized.
+     * Can be called externally to ensure the table exists before querying it.
      */
-    private synchronized void ensureInitialized() throws SQLException {
+    public synchronized void ensureInitialized() throws SQLException {
         if (initialized) return;
         Connection conn = duckDb.getNativeConnection();
         try (Statement stmt = conn.createStatement()) {
+            stmt.execute(CREATE_SEQUENCE_SQL);
             stmt.execute(CREATE_TABLE_SQL);
         }
         initialized = true;

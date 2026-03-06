@@ -194,9 +194,9 @@ Connection conn = DriverManager.getConnection(url, props);
 │                    └─ DatabaseMetaData  │
 │                                         │
 │  Metadata (sidebar):                    │
-│  ├─ SHOW DATABASES/SCHEMAS/TABLES/...  │
-│  │   (via Query Service → Snowflake)   │
-│  └─ Virtual _keboola tables overlay    │
+│  ├─ SHOW DATABASES/SCHEMAS/TABLES/...   │
+│  │   (via Query Service → Snowflake)    │
+│  └─ Virtual _keboola tables overlay     │
 │                                         │
 │  Command Dispatcher:                    │
 │  ├─ HelpCommandHandler                  │
@@ -204,7 +204,7 @@ Connection conn = DriverManager.getConnection(url, props);
 │                                         │
 │  HTTP Clients:                          │
 │  ├─ StorageApiClient (virtual tables)   │
-│  ├─ QueryServiceClient (SQL + metadata)│
+│  ├─ QueryServiceClient (SQL + metadata) │
 │  └─ JobQueueClient (job history)        │
 └──────┬──────────┬──────────┬────────────┘
        │          │          │
@@ -257,13 +257,13 @@ make manual-test
 
 ```
 src/main/java/com/keboola/jdbc/
-├── KeboolaDriver.java            # SPI entry point, URL parsing
-├── KeboolaConnection.java        # Connection lifecycle, service discovery
-├── KeboolaStatement.java         # SQL execution, command interception
-├── KeboolaPreparedStatement.java # Parameterized queries
-├── KeboolaResultSet.java         # Lazy-paging result set
-├── KeboolaDatabaseMetaData.java  # SHOW commands metadata (+ virtual _keboola)
-├── ArrayResultSet.java           # In-memory ResultSet for metadata
+├── KeboolaDriver.java                # SPI entry point, URL parsing
+├── KeboolaConnection.java            # Connection lifecycle, service discovery
+├── KeboolaStatement.java             # SQL execution, command interception
+├── KeboolaPreparedStatement.java     # Parameterized queries
+├── KeboolaResultSet.java             # Lazy-paging result set
+├── KeboolaDatabaseMetaData.java      # SHOW commands metadata (+ virtual _keboola)
+├── ArrayResultSet.java               # In-memory ResultSet for metadata
 ├── command/
 │   ├── KeboolaCommandHandler.java    # Handler interface
 │   ├── KeboolaCommandDispatcher.java # Chain-of-responsibility dispatcher
@@ -272,17 +272,17 @@ src/main/java/com/keboola/jdbc/
 │   ├── VirtualTableRegistry.java     # API calls → ArrayResultSet for each table
 │   └── VirtualTableMetadata.java     # Column definitions for IDE integration
 ├── config/
-│   ├── DriverConfig.java         # Driver constants and defaults
-│   └── ConnectionConfig.java     # URL + properties parsing
+│   ├── DriverConfig.java             # Driver constants and defaults
+│   └── ConnectionConfig.java         # URL + properties parsing
 ├── http/
-│   ├── StorageApiClient.java     # Storage API v2 (virtual tables + discovery)
-│   ├── QueryServiceClient.java   # Query Service API v1 (SQL + SHOW metadata)
-│   ├── JobQueueClient.java       # Job Queue API client (lazy init)
-│   └── model/                    # API data models
+│   ├── StorageApiClient.java         # Storage API v2 (virtual tables + discovery)
+│   ├── QueryServiceClient.java       # Query Service API v1 (SQL + SHOW metadata)
+│   ├── JobQueueClient.java           # Job Queue API client (lazy init)
+│   └── model/                        # API data models
 ├── meta/
-│   └── TypeMapper.java           # Snowflake → JDBC type mapping
+│   └── TypeMapper.java               # Snowflake → JDBC type mapping
 └── exception/
-    └── KeboolaJdbcException.java # SQLSTATE error codes
+    └── KeboolaJdbcException.java     # SQLSTATE error codes
 ```
 
 ## Contributors

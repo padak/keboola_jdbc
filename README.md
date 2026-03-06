@@ -22,7 +22,7 @@ All metadata (databases, schemas, tables, columns) comes from Snowflake SHOW com
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-2.0.2.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-2.1.0.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -77,7 +77,7 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.0.2.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.1.0.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
@@ -293,8 +293,13 @@ src/main/java/com/keboola/jdbc/
 ## Contributors
 
 - **David Esner** ([@davidesner](https://github.com/davidesner)) — architect of the Snowflake-native metadata layer (2.0.0). Replaced Storage API metadata with `SHOW` commands via Query Service, `initCatalogAndSchema()`, and server-side `USE DATABASE`/`USE SCHEMA`. See [PR #2](https://github.com/padak/keboola_jdbc/pull/2).
+- **Jan Botorek** ([@jbotor](https://github.com/jbotor)) — found and fixed `StackOverflowError` recursion in `setSchema()`/`interceptUseCommand()` loop (2.1.0). See [PR #4](https://github.com/padak/keboola_jdbc/pull/4).
 
 ## Changelog
+
+### 2.1.0
+
+- **Fix StackOverflow in setSchema/interceptUseCommand**: `setSchema()` called `execute("USE SCHEMA ...")` which triggered `interceptUseCommand()` which called `setSchema()` again — infinite recursion. Fixed by introducing `updateLocalSchema()` that only updates the local field. Credit: [@jbotor](https://github.com/jbotor) ([PR #4](https://github.com/padak/keboola_jdbc/pull/4)).
 
 ### 2.0.2
 

@@ -1,16 +1,18 @@
 # Keboola JDBC Driver
 
-JDBC driver for [Keboola](https://www.keboola.com/) that connects any JDBC-compatible client (DBeaver, DataGrip, etc.) to Keboola projects via the Storage API and Query Service API.
+JDBC driver for [Keboola](https://www.keboola.com/) that connects any JDBC-compatible client (DBeaver, DataGrip, etc.) to Keboola projects via the Query Service API.
 
-User provides only an **API token and stack URL** — the driver auto-discovers branches, workspaces, and metadata.
+User provides only an **API token and stack URL** — the driver auto-discovers branches, workspaces, and metadata from Snowflake directly.
 
 ## JDBC Mapping
 
-| JDBC Concept | Keboola Concept | Example |
+| JDBC Concept | Snowflake Concept | Example |
 |---|---|---|
-| Catalog | Project | `Padak` |
-| Schema | Bucket | `in.c-main` |
-| Table | Table | `data` |
+| Catalog | Database | `SAPI_901` |
+| Schema | Schema | `WORKSPACE_1296474964` |
+| Table | Table / View | `my_table` |
+
+All metadata (databases, schemas, tables, columns) comes from Snowflake SHOW commands via the Query Service. The virtual `_keboola` schema provides Keboola platform metadata alongside real Snowflake objects.
 
 ## Quick Start
 
@@ -20,7 +22,7 @@ User provides only an **API token and stack URL** — the driver auto-discovers 
 mvn clean package
 ```
 
-Produces an uber-jar at `target/keboola-jdbc-driver-1.4.0-experimental.jar` (~10 MB, all dependencies shaded).
+Produces an uber-jar at `target/keboola-jdbc-driver-2.0.0.jar` (~10 MB, all dependencies shaded).
 
 Requires **Java 11+**.
 
@@ -31,7 +33,7 @@ Requires **Java 11+**.
 | `token` | Yes | Keboola Storage API token |
 | `branch` | No | Branch ID (auto-detects default branch) |
 | `workspace` | No | Workspace ID (auto-selects newest available) |
-| `schema` | No | Default schema/bucket (e.g. `in.c-main`) for unqualified table refs |
+| `schema` | No | Default schema (e.g. `in.c-main`) for unqualified table refs |
 
 ### JDBC URL Format
 
@@ -53,7 +55,7 @@ Properties props = new Properties();
 props.setProperty("token", System.getenv("KEBOOLA_TOKEN"));
 
 try (Connection conn = DriverManager.getConnection(url, props)) {
-    // Browse schemas (buckets)
+    // Browse schemas
     try (ResultSet rs = conn.getMetaData().getSchemas()) {
         while (rs.next()) {
             System.out.println(rs.getString("TABLE_SCHEM"));
@@ -75,16 +77,16 @@ try (Connection conn = DriverManager.getConnection(url, props)) {
 
 1. **Database** > **Driver Manager** > **New**
 2. Set **Driver Name** to `Keboola`
-3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-1.4.0-experimental.jar`
+3. **Libraries** tab > **Add File** > select `target/keboola-jdbc-driver-2.0.0.jar`
 4. Set **Class Name** to `com.keboola.jdbc.KeboolaDriver`
 5. Set **URL Template** to `jdbc:keboola://connection.keboola.com`
 6. **OK** > **New Database Connection** > select `Keboola`
 7. In **Driver Properties**, set `token` to your Keboola API token
 8. **Test Connection**
 
-The database navigator will show your buckets as schemas and tables with columns.
+The database navigator will show your Snowflake databases, schemas, tables, and views — plus the virtual `_keboola` schema with platform metadata.
 
-## Virtual Tables (Experimental)
+## Virtual Tables
 
 The driver exposes Keboola platform metadata as virtual SQL tables in the `_keboola` schema. These tables are backed by Keboola APIs — no Snowflake queries involved, instant results.
 
@@ -117,18 +119,19 @@ SELECT * FROM _keboola.tables;
 
 ### IDE integration
 
-The `_keboola` schema appears in the DBeaver/DataGrip sidebar alongside real buckets:
+The `_keboola` schema appears in the DBeaver/DataGrip sidebar alongside real Snowflake schemas:
 
 ```
-Padak (project)
-  _keboola          <-- virtual schema
+SAPI_901 (database)
+  _keboola               <-- virtual schema
     Tables
       buckets
       components
       events
       jobs
       tables
-  in.c-main         <-- real Snowflake buckets
+  WORKSPACE_1296474964   <-- real Snowflake schemas
+  in.c-main
   out.c-results
 ```
 
@@ -190,32 +193,38 @@ Connection conn = DriverManager.getConnection(url, props);
 │                    ├─ KeboolaResultSet  │
 │                    └─ DatabaseMetaData  │
 │                                         │
+│  Metadata (sidebar):                    │
+│  ├─ SHOW DATABASES/SCHEMAS/TABLES/...  │
+│  │   (via Query Service → Snowflake)   │
+│  └─ Virtual _keboola tables overlay    │
+│                                         │
 │  Command Dispatcher:                    │
 │  ├─ HelpCommandHandler                  │
 │  └─ VirtualTableHandler → Registry      │
 │                                         │
 │  HTTP Clients:                          │
-│  ├─ StorageApiClient (metadata)         │
-│  ├─ QueryServiceClient (SQL execution)  │
+│  ├─ StorageApiClient (virtual tables)   │
+│  ├─ QueryServiceClient (SQL + metadata)│
 │  └─ JobQueueClient (job history)        │
 └──────┬──────────┬──────────┬────────────┘
        │          │          │
        ▼          ▼          ▼
   Storage API  Query Svc  Job Queue API
-  (metadata)   (SQL)      (job history)
+  (virt.tables) (SQL+meta) (job history)
 ```
 
-**Storage API** (`connection.keboola.com`): Token verification, branch/workspace discovery, bucket/table/column metadata, components, events.
+**Query Service API** (`query.keboola.com`, auto-discovered): SQL execution and all sidebar metadata via Snowflake `SHOW` commands (`SHOW DATABASES`, `SHOW SCHEMAS`, `SHOW TABLES`, `SHOW COLUMNS`).
 
-**Query Service API** (`query.keboola.com`, auto-discovered): Async SQL execution with job polling and paginated results.
+**Storage API** (`connection.keboola.com`): Token verification, branch/workspace discovery, and data for virtual `_keboola` tables (components, events, buckets, tables).
 
 **Job Queue API** (`queue.keboola.com`, auto-discovered): Job history via `/search/jobs` endpoint. Lazy-initialized on first `_keboola.jobs` query.
 
 ### Key Design Decisions
 
+- **Snowflake-native metadata**: Sidebar shows real Snowflake objects via `SHOW` commands through the Query Service — no Storage API metadata invention
 - **Async execution**: Submit job > poll with exponential backoff (100ms to 2s) > fetch paginated results
 - **Command dispatcher**: Intercepts virtual table queries and KEBOOLA commands before they reach Query Service
-- **Schema cache**: 60s TTL, stale-on-error fallback
+- **Virtual table isolation**: `_keboola` schema is injected into metadata results but excluded from Snowflake `SHOW` commands to avoid "object does not exist" errors
 - **Uber-jar**: OkHttp, Jackson, and Kotlin runtime relocated to avoid classpath conflicts
 - **Type mapping**: Snowflake types mapped to `java.sql.Types` (VARCHAR, NUMBER, BOOLEAN, DATE, TIMESTAMP, etc.)
 
@@ -253,7 +262,7 @@ src/main/java/com/keboola/jdbc/
 ├── KeboolaStatement.java         # SQL execution, command interception
 ├── KeboolaPreparedStatement.java # Parameterized queries
 ├── KeboolaResultSet.java         # Lazy-paging result set
-├── KeboolaDatabaseMetaData.java  # Schema browser (+ virtual _keboola schema)
+├── KeboolaDatabaseMetaData.java  # SHOW commands metadata (+ virtual _keboola)
 ├── ArrayResultSet.java           # In-memory ResultSet for metadata
 ├── command/
 │   ├── KeboolaCommandHandler.java    # Handler interface
@@ -266,18 +275,29 @@ src/main/java/com/keboola/jdbc/
 │   ├── DriverConfig.java         # Driver constants and defaults
 │   └── ConnectionConfig.java     # URL + properties parsing
 ├── http/
-│   ├── StorageApiClient.java     # Storage API v2 client
-│   ├── QueryServiceClient.java   # Query Service API v1 client
+│   ├── StorageApiClient.java     # Storage API v2 (virtual tables + discovery)
+│   ├── QueryServiceClient.java   # Query Service API v1 (SQL + SHOW metadata)
 │   ├── JobQueueClient.java       # Job Queue API client (lazy init)
 │   └── model/                    # API data models
 ├── meta/
-│   ├── TypeMapper.java           # Snowflake → JDBC type mapping
-│   └── SchemaCache.java          # Metadata cache with TTL
+│   └── TypeMapper.java           # Snowflake → JDBC type mapping
 └── exception/
     └── KeboolaJdbcException.java # SQLSTATE error codes
 ```
 
+## Contributors
+
+- **David Esner** ([@davidesner](https://github.com/davidesner)) — architect of the Snowflake-native metadata layer (2.0.0). Replaced Storage API metadata with `SHOW` commands via Query Service, `initCatalogAndSchema()`, and server-side `USE DATABASE`/`USE SCHEMA`. See [PR #2](https://github.com/padak/keboola_jdbc/pull/2).
+
 ## Changelog
+
+### 2.0.0
+
+- **BREAKING: Snowflake-native metadata**: Sidebar now shows real Snowflake databases, schemas, tables, and views via `SHOW` commands through the Query Service. Replaces the previous Storage API-based metadata layer. Catalogs are now Snowflake databases (not Keboola projects), schemas are Snowflake schemas (not buckets).
+- **Connection init discovers server state**: `initCatalogAndSchema()` runs `SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()` at connect time to sync the driver with the Snowflake session.
+- **`setCatalog()` / `setSchema()` execute server commands**: `USE DATABASE` and `USE SCHEMA` are sent to the Query Service, affecting the real Snowflake session.
+- **Virtual tables preserved**: `_keboola` schema with 5 virtual tables still works alongside real Snowflake metadata. Virtual tables are isolated from `SHOW` commands to prevent "object does not exist" errors.
+- **Removed Storage API metadata dependency**: `SchemaCache` and Storage API bucket/table/column listing no longer used for the sidebar. Storage API is still used for token verification, service discovery, and virtual table data.
 
 ### 1.4.0-experimental
 

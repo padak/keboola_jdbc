@@ -176,7 +176,7 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
 
         boolean wantTables = typeSet == null || typeSet.contains("TABLE") || typeSet.contains("BASE TABLE");
         boolean wantViews = typeSet == null || typeSet.contains("VIEW");
-        boolean wantVirtual = typeSet == null || typeSet.contains("VIRTUAL TABLE");
+        boolean wantVirtual = typeSet == null || typeSet.contains("VIRTUAL TABLE") || typeSet.contains("TABLE");
 
         List<List<Object>> rows = new ArrayList<>();
 

@@ -239,9 +239,9 @@ public class KaiCommandHandler implements KeboolaCommandHandler {
         String chatId = connection.getOrCreateKaiChatId();
 
         // Determine branch ID (may be null for DuckDB-only connections)
-        String branchId = null;
+        Long branchId = null;
         if (connection.getQueryServiceBackend() != null) {
-            branchId = String.valueOf(connection.getQueryServiceBackend().getBranchId());
+            branchId = connection.getQueryServiceBackend().getBranchId();
         }
 
         KaiResponse response = kai.chat(chatId, message, branchId);

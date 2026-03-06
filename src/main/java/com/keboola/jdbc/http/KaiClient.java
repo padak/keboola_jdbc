@@ -69,11 +69,11 @@ public class KaiClient {
      *
      * @param chatId    unique chat session ID (one per JDBC connection)
      * @param message   the user message text
-     * @param branchId  the current branch ID (may be null for DuckDB-only)
+     * @param branchId  the current branch ID as a number (may be null for DuckDB-only)
      * @return aggregated response with full text and optional extracted SQL
      * @throws KeboolaJdbcException if the request fails or Kai returns an error
      */
-    public KaiResponse chat(String chatId, String message, String branchId) throws KeboolaJdbcException {
+    public KaiResponse chat(String chatId, String message, Long branchId) throws KeboolaJdbcException {
         LOG.info("Sending Kai chat message (chatId={}, length={})", chatId, message.length());
 
         String requestBody = buildChatRequestBody(chatId, message, branchId);
@@ -195,7 +195,7 @@ public class KaiClient {
         }
     }
 
-    private String buildChatRequestBody(String chatId, String message, String branchId) {
+    private String buildChatRequestBody(String chatId, String message, Long branchId) {
         try {
             Map<String, Object> messagePart = new HashMap<>();
             messagePart.put("type", "text");

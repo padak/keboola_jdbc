@@ -85,8 +85,8 @@ public final class DriverConfig {
     /** Service ID used to discover Kai's URL from the Storage API services index. */
     public static final String KAI_SERVICE_ID = "kai-assistant";
 
-    /** Default chat model for Kai conversations. */
-    public static final String KAI_DEFAULT_MODEL = "claude-sonnet-4-20250514";
+    /** Default chat model type for Kai conversations. API accepts "chat-model" or "chat-model-reasoning". */
+    public static final String KAI_DEFAULT_MODEL = "chat-model";
 
     /** Visibility type for Kai chat sessions. */
     public static final String KAI_VISIBILITY_TYPE = "private";

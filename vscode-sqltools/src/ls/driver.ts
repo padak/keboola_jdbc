@@ -698,42 +698,105 @@ export default class KeboolaDriver
   // -- Static Completions -----------------------------------------------------
 
   getStaticCompletions(): Promise<{ [word: string]: NSDatabase.IStaticCompletion }> {
-    const keywords = [
-      'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'IN', 'EXISTS',
-      'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE',
-      'CREATE', 'ALTER', 'DROP', 'TABLE', 'VIEW', 'INDEX', 'SCHEMA',
-      'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER', 'CROSS', 'ON',
-      'GROUP', 'BY', 'ORDER', 'ASC', 'DESC', 'HAVING',
-      'LIMIT', 'OFFSET', 'FETCH', 'FIRST', 'NEXT', 'ROWS', 'ONLY',
-      'UNION', 'ALL', 'INTERSECT', 'EXCEPT', 'MINUS',
-      'AS', 'DISTINCT', 'BETWEEN', 'LIKE', 'ILIKE', 'IS', 'NULL',
-      'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-      'CAST', 'COALESCE', 'NULLIF',
-      'COUNT', 'SUM', 'AVG', 'MIN', 'MAX',
-      'WITH', 'RECURSIVE',
-      'TRUE', 'FALSE',
-      'BEGIN', 'COMMIT', 'ROLLBACK',
-      'USE',
-      'SHOW HISTORY',
+    const completions: { [word: string]: NSDatabase.IStaticCompletion } = {};
+
+    // 1. Standard SQL keywords
+    const sqlKeywords = [
+      'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'IN', 'BETWEEN',
+      'LIKE', 'IS', 'NULL', 'AS', 'JOIN', 'LEFT', 'RIGHT', 'INNER',
+      'OUTER', 'CROSS', 'ON', 'UNION', 'ALL', 'DISTINCT', 'GROUP', 'BY',
+      'ORDER', 'ASC', 'DESC', 'HAVING', 'LIMIT', 'OFFSET', 'INSERT',
+      'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'CREATE', 'DROP',
+      'ALTER', 'TABLE', 'VIEW', 'INDEX', 'SCHEMA', 'DATABASE', 'IF',
+      'EXISTS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'CAST',
+      'COALESCE', 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'WITH',
+      'RECURSIVE', 'OVER', 'PARTITION', 'WINDOW', 'ROW', 'ROWS',
+      'RANGE', 'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT',
+      'FIRST', 'LAST', 'NULLS', 'FETCH', 'NEXT', 'ONLY', 'TRUE',
+      'FALSE', 'GRANT', 'REVOKE', 'EXPLAIN',
     ];
 
-    const completions: { [word: string]: NSDatabase.IStaticCompletion } = {};
-    for (const kw of keywords) {
+    for (const kw of sqlKeywords) {
       completions[kw] = {
         label: kw,
-        detail: kw === 'SHOW HISTORY'
-          ? 'Keboola: Show workspace query history'
-          : 'SQL Keyword',
+        detail: 'SQL Keyword',
         filterText: kw,
-        sortText: kw === 'SHOW HISTORY' ? '0000' : `9999${kw}`,
-        documentation: {
-          kind: 'markdown',
-          value: kw === 'SHOW HISTORY'
-            ? 'Fetches query history from the Keboola workspace via the Query Service API.'
-            : `SQL keyword: \`${kw}\``,
-        },
+        sortText: `9999${kw}`,
+        documentation: { value: `SQL keyword: \`${kw}\`` },
       };
     }
+
+    // 2. Keboola commands (sorted to top)
+    completions['KEBOOLA HELP'] = {
+      label: 'KEBOOLA HELP',
+      detail: 'Show available Keboola commands',
+      filterText: 'KEBOOLA HELP',
+      sortText: '0000',
+      documentation: { value: 'Displays a list of all available Keboola-specific commands and virtual tables.' },
+    };
+    completions['SHOW HISTORY'] = {
+      label: 'SHOW HISTORY',
+      detail: 'Show workspace query history',
+      filterText: 'SHOW HISTORY',
+      sortText: '0000',
+      documentation: { value: 'Fetches query history from the Keboola workspace via the Query Service API.' },
+    };
+
+    // 3. Schema commands
+    completions['USE SCHEMA'] = {
+      label: 'USE SCHEMA',
+      detail: 'Set default schema',
+      filterText: 'USE SCHEMA',
+      sortText: '0001',
+      documentation: { value: 'Sets the default schema for subsequent queries. Example: `USE SCHEMA "in.c-main"`' },
+    };
+    completions['USE DATABASE'] = {
+      label: 'USE DATABASE',
+      detail: 'Set default database',
+      filterText: 'USE DATABASE',
+      sortText: '0001',
+      documentation: { value: 'Sets the default database for subsequent queries. Example: `USE DATABASE "my_db"`' },
+    };
+
+    // 4. Virtual table completions
+    const virtualTables: Array<{ label: string; detail: string; doc: string }> = [
+      {
+        label: '_keboola.components',
+        detail: 'List components and configurations',
+        doc: 'Virtual table returning all components and their configurations from the project. Usage: `SELECT * FROM _keboola.components`',
+      },
+      {
+        label: '_keboola.events',
+        detail: 'List recent storage events',
+        doc: 'Virtual table returning recent storage events. Usage: `SELECT * FROM _keboola.events LIMIT 50`',
+      },
+      {
+        label: '_keboola.jobs',
+        detail: 'List recent jobs',
+        doc: 'Virtual table returning recent jobs from the project. Usage: `SELECT * FROM _keboola.jobs LIMIT 20`',
+      },
+      {
+        label: '_keboola.tables',
+        detail: 'List all tables with metadata',
+        doc: 'Virtual table returning all tables across all buckets with metadata. Usage: `SELECT * FROM _keboola.tables`',
+      },
+      {
+        label: '_keboola.buckets',
+        detail: 'List all buckets',
+        doc: 'Virtual table returning all buckets in the project. Usage: `SELECT * FROM _keboola.buckets`',
+      },
+    ];
+
+    for (const vt of virtualTables) {
+      completions[vt.label] = {
+        label: vt.label,
+        detail: vt.detail,
+        filterText: vt.label,
+        sortText: `0002${vt.label}`,
+        documentation: { value: vt.doc },
+      };
+    }
+
     return Promise.resolve(completions);
   }
 

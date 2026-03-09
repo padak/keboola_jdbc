@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Monorepo with two subprojects:
-- **jdbc-driver/** -- Java JDBC driver connecting DBeaver/DataGrip to Keboola projects
-- **vscode-sqltools/** -- TypeScript VSCode SQLTools extension (planned)
+- **jdbc-driver/** -- Java JDBC driver (v2.1.3) connecting DBeaver/DataGrip to Keboola projects
+- **vscode-sqltools/** -- TypeScript VSCode SQLTools extension (v2.1.3)
 
 Two API layers used by both:
 - **Storage API** (`connection.keboola.com`) - connection setup: tokens, branches, workspaces. Also provides data for virtual `_keboola.*` tables.
@@ -20,7 +20,7 @@ JDBC mapping: Catalog = Database (from Snowflake), Schema = Schema (from Snowfla
 
 ```bash
 cd jdbc-driver
-mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.1.2.jar)
+mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.1.3.jar)
 mvn test                   # Run all unit tests
 mvn test -pl . -Dtest=TypeMapperTest          # Run single test class
 mvn test -pl . -Dtest=TypeMapperTest#testVarchar  # Run single test method
@@ -30,33 +30,63 @@ mvn verify -Pkeboola-integration              # Run integration tests (needs KEB
 Manual integration test:
 ```bash
 cd jdbc-driver
-KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-2.1.2.jar com.keboola.jdbc.ManualConnectionTest
+KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-2.1.3.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 **After every version bump or code change, always run `make dist`** (from `jdbc-driver/`) to rebuild the uber-jar and copy it to `jdbc-driver/dist/`. The `dist/` directory contains the release-ready jars that users download. **Never delete old jars from `jdbc-driver/dist/`** -- keep all previous versions for version history.
 
 Java 11+. Surefire needs `-Dnet.bytebuddy.experimental=true` (already configured in pom.xml for Java 25 compat).
 
+### VSCode SQLTools Extension
+
+```bash
+cd vscode-sqltools
+npm install                # Install dependencies
+npm run compile            # Build with tsup (extension.ts + ls/plugin.ts -> out/)
+npm test                   # Run 147 unit tests via vscode-test
+npm run package            # Create .vsix
+npm run test:integration   # Run live API integration tests (needs .env)
+```
+
+**After every version bump, rebuild and copy VSIX to dist:**
+```bash
+cd vscode-sqltools
+npm run package
+cp sqltools-keboola-driver-*.vsix dist/
+```
+
+**Never delete old .vsix files from `vscode-sqltools/dist/`** -- keep all previous versions.
+
 ## Release Checklist
 
-**MANDATORY: Before merging to main and creating a release, ALWAYS run E2E integration tests first.** Do NOT commit, tag, or release until E2E tests pass. The correct order is:
+**MANDATORY: Before merging to main and creating a release, ALWAYS run tests first.**
 
+### JDBC Driver
 1. Run unit tests: `cd jdbc-driver && mvn test`
 2. Run E2E tests: `cd jdbc-driver && KEBOOLA_TOKEN=xxx KEBOOLA_WORKSPACE=yyy mvn verify -Pkeboola-integration`
 3. Fix any failures
-4. Only then: bump version, `make dist`, commit, tag, `gh release create`
+4. Bump version in pom.xml + DriverConfig + Makefile, then `make dist`
+5. Commit, tag, `gh release create`
 
-This prevents releasing broken drivers. Unit tests alone are not sufficient -- E2E tests catch real API behavior differences (e.g. backendContext not returning schema for certain queries).
+### VSCode Extension
+1. Run tests: `cd vscode-sqltools && npm test`
+2. Bump version in package.json
+3. `npm run package && cp sqltools-keboola-driver-*.vsix dist/`
+4. Commit, tag, release
+
+**Both projects share the same version number** (e.g. 2.1.3).
 
 ## Architecture
 
-### SQL Execution Flow
+### JDBC Driver
+
+#### SQL Execution Flow
 `KeboolaStatement.execute(sql)` -> `QueryServiceClient.submitJob()` -> poll `waitForCompletion()` with exponential backoff (100ms->2s) -> `fetchResults()` (paginated, 1000 rows/page) -> `KeboolaResultSet` (lazy paging)
 
-### Connection Setup Flow
+#### Connection Setup Flow
 `KeboolaConnection(config)` -> `StorageApiClient.verifyToken()` -> `discoverQueryServiceUrl()` (from Storage API index) -> `resolveBranchId()` (auto-detect default) -> `resolveWorkspaceId()` (auto-select newest) -> create `QueryServiceClient` -> `initCatalogAndSchema()` (executes `SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()`)
 
-### Key Patterns
+#### Key Patterns
 - **Metadata via SHOW commands**: `KeboolaDatabaseMetaData` executes `SHOW DATABASES`, `SHOW SCHEMAS`, `SHOW TABLES/VIEWS/OBJECTS`, and `SHOW COLUMNS` via the connection to proxy real Snowflake metadata. Column type info is parsed from JSON `data_type` field in `SHOW COLUMNS` output. Virtual `_keboola` schema is injected alongside real Snowflake schemas.
 - **Schema/catalog tracking via backendContext**: After each query, the driver reads `backendContext.catalog` and `backendContext.schema` from the Query Service response to keep local state in sync. Falls back to parsing USE SCHEMA/DATABASE from SQL if backendContext is not available. `setCatalog()`/`setSchema()` execute `USE DATABASE`/`USE SCHEMA` on the server.
 - **Virtual tables (`_keboola.*`)**: `VirtualTableMetadata` defines schema for `_keboola.components`, `_keboola.jobs`, `_keboola.events`, `_keboola.tables`, `_keboola.buckets`. Handled by `VirtualTableHandler` via `KeboolaCommandDispatcher`.
@@ -65,17 +95,42 @@ This prevents releasing broken drivers. Unit tests alone are not sufficient -- E
 - **Uber-jar via maven-shade-plugin**: OkHttp, Jackson, Kotlin runtime relocated under `com.keboola.jdbc.shaded.*` to avoid classpath conflicts with host applications.
 - **SPI registration**: `META-INF/services/java.sql.Driver` -> `com.keboola.jdbc.KeboolaDriver`
 
+### VSCode SQLTools Extension
+
+#### Architecture
+- **extension.ts** -- Extension entry point (VSCode context). Registers driver with SQLTools, handles QuickPick branch/workspace selection in `parseBeforeSaveConnection` and `resolveConnection` hooks.
+- **ls/plugin.ts** -- Language server plugin. Registers `KeboolaDriver` with the SQLTools LS.
+- **ls/driver.ts** -- Core driver (~900 LOC). Implements `IConnectionDriver`: open/close, query execution with async polling, sidebar explorer (buckets/tables/columns), virtual `_keboola.*` tables, SHOW HISTORY, USE SCHEMA, query cancellation, autocomplete.
+- **ls/schema-cache.ts** -- 60s TTL cache with stale-on-error fallback for bucket/table metadata.
+- **ls/virtual-tables.ts** -- 5 virtual tables fetched from Storage API.
+- **ls/help-command.ts** -- KEBOOLA HELP command output.
+- **constants.ts** -- All configuration: polling intervals, page sizes, timeouts, URL mappings.
+
+#### Key Patterns
+- **Two entry points**: `extension.ts` runs in VSCode context (has access to `vscode.window` for QuickPick), `ls/plugin.ts` runs in Language Server process (no VSCode UI access).
+- **parseBeforeSaveConnection**: The right hook for QuickPick -- its return value is persisted to settings. `resolveConnection` only modifies in-memory values for the current session.
+- **Query execution**: POST to Query Service -> poll with exponential backoff (100ms->2s, 300s timeout) -> paginated fetch (1000 rows/page, up to 10000 total).
+- **HTTP retry**: 3x for 5xx/429, fail fast for 401/403/400/404. Detailed error messages include HTTP status and response body.
+- **Query Service URL auto-discovery**: `GET /v2/storage` -> parse `services[]` where `id === "query"`. Fallback: `connection.X` -> `query.X` naming convention.
+
 ### API Specifics
-- Workspace IDs can exceed `Integer.MAX_VALUE` -- use `long` everywhere (not `int`)
+- Workspace IDs can exceed `Integer.MAX_VALUE` -- use `long`/string everywhere (not `int`)
 - Storage API branches URL: `/v2/storage/dev-branches` (no trailing slash, follow redirects)
 - Query Service result page size minimum is 100
 - `StatementStatus.rowsAffected` is 0 for SELECT too -- use `numberOfRows > 0` + SQL keyword heuristic to distinguish SELECT from DML
+- Query Service history: `GET /api/v1/branches/{b}/workspaces/{w}/queries?pageSize=500` -- SQL text is at `item.query` (top-level field, NOT inside `statements[]`)
 
 ## Testing
 
+### JDBC Driver
 - Unit tests in `jdbc-driver/src/test/java/com/keboola/jdbc/`: TypeMapperTest, ConnectionConfigTest, ArrayResultSetTest, KeboolaDriverTest, SchemaCacheTest
 - `ManualConnectionTest` is a CLI integration test (not run by `mvn test`), needs `KEBOOLA_TOKEN` env var
 - Use JUnit 5 + Mockito 5.11
+
+### VSCode Extension
+- 147 unit tests in `vscode-sqltools/src/test/suite/`: driver.test.ts, schema-cache.test.ts, virtual-tables.test.ts, help-command.test.ts, schema.test.ts, constants.test.ts
+- 9 integration tests in `vscode-sqltools/tests/integration.test.ts` (needs `.env` with KEBOOLA_TOKEN)
+- Uses Mocha + VSCode test runner
 
 ## Project Structure
 
@@ -107,4 +162,16 @@ jdbc-driver/src/main/java/com/keboola/jdbc/
 │   └── TypeMapper.java               # Snowflake -> JDBC type mapping
 └── exception/
     └── KeboolaJdbcException.java     # SQLSTATE error codes
+
+vscode-sqltools/src/
+├── extension.ts                      # VSCode entry point, QuickPick, driver registration
+├── constants.ts                      # All config constants, URL helpers
+├── types.ts                          # API response interfaces
+└── ls/
+    ├── plugin.ts                     # Language server plugin registration
+    ├── driver.ts                     # Core driver (~900 LOC)
+    ├── queries.ts                    # IBaseQueries stubs
+    ├── schema-cache.ts               # TTL cache with stale-on-error
+    ├── virtual-tables.ts             # 5 virtual _keboola.* tables
+    └── help-command.ts               # KEBOOLA HELP command
 ```

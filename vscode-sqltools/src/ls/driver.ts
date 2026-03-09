@@ -8,6 +8,8 @@ import {
 } from '@sqltools/types';
 import queries from './queries';
 import { SchemaCache } from './schema-cache';
+import * as virtualTables from './virtual-tables';
+import * as helpCommand from './help-command';
 import {
   getConnectionUrl,
   getQueryUrl,
@@ -206,6 +208,25 @@ export default class KeboolaDriver
       .then(async () => {
         const results: NSDatabase.IResult[] = [];
         for (const sql of queries) {
+          // 1. Check KEBOOLA HELP command (before any API calls)
+          if (helpCommand.canHandle(sql)) {
+            results.push(helpCommand.execute(this.getId()));
+            continue;
+          }
+
+          // 2. Check virtual table queries (before Query Service)
+          if (virtualTables.canHandle(sql)) {
+            results.push(
+              ...(await virtualTables.execute(
+                sql,
+                this.getId(),
+                this.storageApiRequest.bind(this)
+              ))
+            );
+            continue;
+          }
+
+          // 3. Check SHOW HISTORY command
           const trimmed = sql.trim().replace(/;\s*$/, '').trim().toUpperCase();
           if (trimmed === 'SHOW HISTORY' || trimmed === 'SHOW QUERY HISTORY') {
             results.push(...(await this.fetchWorkspaceQueryHistory(sql)));

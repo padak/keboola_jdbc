@@ -35,7 +35,8 @@
     "pretest": "npm run compile && tsc -p tsconfig.test.json",
     "test": "vscode-test",
     "package": "vsce package --allow-star-activation",
-    "publish": "vsce publish"
+    "publish": "vsce publish",
+    "test:integration": "npx tsx tests/integration.test.ts"
   },
   "tsup": {
     "entry": [
@@ -64,6 +65,7 @@
     "ajv": "^8.18.0",
     "mocha": "^11.7.5",
     "tsup": "^8.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.0.0"
   },
   "contributes": {

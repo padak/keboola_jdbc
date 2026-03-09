@@ -161,16 +161,24 @@ export default class KeboolaDriver
       return String(this.creds.branchId);
     }
 
-    const branches = await this.storageApiRequest<BranchResponse[]>(
-      '/v2/storage/dev-branches'
-    );
-    const defaultBranch = branches.find((b) => b.isDefault);
-    if (!defaultBranch) {
-      throw new Error('No default branch found in the project.');
-    }
+    try {
+      const branches = await this.storageApiRequest<BranchResponse[]>(
+        '/v2/storage/dev-branches'
+      );
+      const defaultBranch = branches.find((b) => b.isDefault);
+      if (!defaultBranch) {
+        throw new Error('No default branch found in the project.');
+      }
 
-    this.log.info(`Auto-detected default branch: id=${defaultBranch.id}, name="${defaultBranch.name}"`);
-    return String(defaultBranch.id);
+      this.log.info(`Auto-detected default branch: id=${defaultBranch.id}, name="${defaultBranch.name}"`);
+      return String(defaultBranch.id);
+    } catch (err: any) {
+      const msg = String(err.message || err).replace(/\.\s*$/, '');
+      throw new Error(
+        `Failed to auto-detect branch: ${msg}. ` +
+        'Please specify Branch ID in the connection settings.'
+      );
+    }
   }
 
   /**
@@ -182,20 +190,108 @@ export default class KeboolaDriver
       return String(this.creds.workspaceId);
     }
 
-    const workspaces = await this.storageApiRequest<WorkspaceResponse[]>(
-      '/v2/storage/workspaces'
-    );
-    if (workspaces.length === 0) {
+    try {
+      const workspaces = await this.storageApiRequest<WorkspaceResponse[]>(
+        '/v2/storage/workspaces'
+      );
+      if (workspaces.length === 0) {
+        throw new Error(
+          'No workspaces found. Create a workspace in Keboola UI first.'
+        );
+      }
+
+      const newest = workspaces[workspaces.length - 1];
+      this.log.info(
+        `Auto-selected workspace: id=${newest.id}, name="${newest.name}" (${workspaces.length} available)`
+      );
+      return String(newest.id);
+    } catch (err: any) {
+      const msg = String(err.message || err).replace(/\.\s*$/, '');
       throw new Error(
-        'No workspaces found in the project. Create a workspace in Keboola UI first, then reconnect.'
+        `Failed to auto-detect workspace: ${msg}. ` +
+        'Please specify Workspace ID in the connection settings.'
       );
     }
+  }
 
-    const newest = workspaces[workspaces.length - 1];
-    this.log.info(
-      `Auto-selected workspace: id=${newest.id}, name="${newest.name}" (${workspaces.length} available)`
+  // -- Record Browsing (triggered by sidebar icons) --------------------------
+
+  /**
+   * Called when user clicks the "Show Records" icon on a table in the sidebar.
+   * Constructs a SELECT query with proper Snowflake quoting and runs it.
+   */
+  async showRecords(
+    table: NSDatabase.ITable,
+    opt: IQueryOptions & { limit: number; page?: number }
+  ): Promise<NSDatabase.IResult[]> {
+    const limit = opt.limit || 50;
+    // Virtual tables use unquoted _keboola.name syntax
+    if (table.schema === '_keboola') {
+      return this.query(`SELECT * FROM _keboola.${table.label} LIMIT ${limit}`);
+    }
+    const tableId = table.schema
+      ? `"${table.schema}"."${table.label}"`
+      : `"${table.label}"`;
+    return this.query(`SELECT * FROM ${tableId} LIMIT ${limit}`);
+  }
+
+  /**
+   * Called when user clicks "Describe Table" in the sidebar.
+   * Returns column metadata from Storage API (no SQL needed).
+   */
+  async describeTable(
+    table: NSDatabase.ITable,
+    _opt?: IQueryOptions
+  ): Promise<NSDatabase.IResult[]> {
+    await this.open();
+    const tableId = table.schema
+      ? `${table.schema}.${table.label}`
+      : table.label;
+    const detail = await this.storageApiRequest<any>(
+      `/v2/storage/tables/${encodeURIComponent(tableId)}`
     );
-    return String(newest.id);
+    const columns = detail.definition?.columns ||
+      (detail.columnMetadata
+        ? Object.keys(detail.columnMetadata).map((name: string) => ({
+            name,
+            definition: { type: detail.columnMetadata[name]?.type || 'STRING' },
+          }))
+        : (detail.columns || []).map((name: string) => ({
+            name,
+            definition: { type: 'STRING' },
+          })));
+
+    const rows = columns.map((col: any) => ({
+      Column: col.name,
+      Type: col.definition?.type || 'STRING',
+      Nullable: col.definition?.nullable !== false ? 'YES' : 'NO',
+    }));
+
+    return [
+      {
+        connId: this.getId(),
+        cols: ['Column', 'Type', 'Nullable'],
+        messages: [{ date: new Date(), message: `${rows.length} columns` }],
+        results: rows,
+        query: `DESCRIBE TABLE ${tableId}`,
+        pageSize: rows.length,
+        resultId: `describe-${Date.now()}`,
+        requestId: `req-${Date.now()}`,
+      },
+    ];
+  }
+
+  /**
+   * Called when user clicks "Count Records" in the sidebar.
+   */
+  async countRecords(
+    table: NSDatabase.ITable,
+    _opt?: IQueryOptions
+  ): Promise<NSDatabase.IResult[]> {
+    const tableId = table.schema
+      ? `"${table.schema}"."${table.label}"`
+      : `"${table.label}"`;
+    return this.query(`SELECT COUNT(*) AS total FROM ${tableId}`);
   }
 
   // -- Query Execution --------------------------------------------------------
@@ -359,12 +455,12 @@ export default class KeboolaDriver
       `/api/v1/branches/${this.branchId}/workspaces/${this.workspaceId}/queries?pageSize=${HISTORY_PAGE_SIZE}`
     );
 
+    const items = Array.isArray(history) ? history : history.data || [];
     const cols = ['Job ID', 'Status', 'Query', 'Created At', 'Completed At'];
-    const items = Array.isArray(history) ? history : history.statements || [];
     const rows = items.map((item: any) => ({
-      'Job ID': item.queryJobId || '',
+      'Job ID': item.queryJobId || item.id || '',
       'Status': item.status || '',
-      'Query': (item.statements || []).map((s: any) => s.sql || '').join('; '),
+      'Query': item.query || '',
       'Created At': item.createdAt || '',
       'Completed At': item.completedAt || '',
     }));
@@ -572,19 +668,50 @@ export default class KeboolaDriver
     const buckets = await this.schemaCache.getBuckets<BucketInfo>(
       () => this.storageApiRequest<BucketInfo[]>('/v2/storage/buckets')
     );
-    return buckets.map((bucket) => ({
-      label: bucket.id,
+
+    const items: MConnectionExplorer.IChildItem[] = [];
+
+    // Add virtual _keboola schema at the top
+    items.push({
+      label: '_keboola',
       type: ContextValue.SCHEMA,
-      schema: bucket.id,
+      schema: '_keboola',
       database: 'keboola',
-      iconId: 'group-by-ref-type',
-      detail: bucket.description || undefined,
-    }));
+      iconId: 'symbol-misc',
+      detail: 'Virtual tables (components, events, jobs, tables, buckets)',
+    });
+
+    // Add real buckets
+    for (const bucket of buckets) {
+      items.push({
+        label: bucket.id,
+        type: ContextValue.SCHEMA,
+        schema: bucket.id,
+        database: 'keboola',
+        iconId: 'group-by-ref-type',
+        detail: bucket.description || undefined,
+      });
+    }
+
+    return items;
   }
 
   private async getTablesForBucket(
     bucketId: string
   ): Promise<MConnectionExplorer.IChildItem[]> {
+    // Virtual _keboola schema returns hardcoded virtual tables
+    if (bucketId === '_keboola') {
+      const virtualTableNames = ['components', 'events', 'jobs', 'tables', 'buckets'];
+      return virtualTableNames.map((name) => ({
+        label: name,
+        type: ContextValue.TABLE,
+        schema: '_keboola',
+        database: 'keboola',
+        isView: true,
+        detail: `SELECT * FROM _keboola.${name}`,
+      }));
+    }
+
     const tables = await this.schemaCache.getTables<TableInfo>(
       bucketId,
       () => this.storageApiRequest<TableInfo[]>(
@@ -600,10 +727,34 @@ export default class KeboolaDriver
     }));
   }
 
+  /** Column definitions for virtual _keboola.* tables */
+  private static readonly VIRTUAL_TABLE_COLUMNS: Record<string, string[]> = {
+    components: ['component_id', 'component_name', 'component_type', 'config_id', 'config_name', 'config_description', 'version', 'created', 'is_disabled'],
+    events: ['event_id', 'type', 'component', 'message', 'created'],
+    tables: ['table_id', 'bucket_id', 'name', 'primary_key', 'rows_count', 'data_size_bytes', 'last_import_date', 'created'],
+    buckets: ['bucket_id', 'name', 'stage', 'description', 'tables_count', 'data_size_bytes', 'created'],
+    jobs: ['job_id', 'component_id', 'config_id', 'status', 'created', 'started', 'finished', 'duration_sec'],
+  };
+
   private async getColumnsForTable(
     bucketId: string,
     tableName: string
   ): Promise<MConnectionExplorer.IChildItem[]> {
+    // Virtual _keboola tables return hardcoded column definitions
+    if (bucketId === '_keboola') {
+      const cols = KeboolaDriver.VIRTUAL_TABLE_COLUMNS[tableName] || [];
+      return cols.map((colName) => ({
+        label: colName,
+        type: ContextValue.COLUMN,
+        schema: '_keboola',
+        database: 'keboola',
+        dataType: 'VARCHAR',
+        isNullable: true,
+        table: tableName,
+        detail: 'VARCHAR',
+      }));
+    }
+
     const tableId = `${bucketId}.${tableName}`;
     const tableDetail = await this.storageApiRequest<any>(
       `/v2/storage/tables/${encodeURIComponent(tableId)}`
@@ -722,7 +873,7 @@ export default class KeboolaDriver
         detail: 'SQL Keyword',
         filterText: kw,
         sortText: `9999${kw}`,
-        documentation: { value: `SQL keyword: \`${kw}\`` },
+        documentation: { kind: 'markdown', value: `SQL keyword: \`${kw}\`` },
       };
     }
 
@@ -732,14 +883,14 @@ export default class KeboolaDriver
       detail: 'Show available Keboola commands',
       filterText: 'KEBOOLA HELP',
       sortText: '0000',
-      documentation: { value: 'Displays a list of all available Keboola-specific commands and virtual tables.' },
+      documentation: { kind: 'markdown', value: 'Displays a list of all available Keboola-specific commands and virtual tables.' },
     };
     completions['SHOW HISTORY'] = {
       label: 'SHOW HISTORY',
       detail: 'Show workspace query history',
       filterText: 'SHOW HISTORY',
       sortText: '0000',
-      documentation: { value: 'Fetches query history from the Keboola workspace via the Query Service API.' },
+      documentation: { kind: 'markdown', value: 'Fetches query history from the Keboola workspace via the Query Service API.' },
     };
 
     // 3. Schema commands
@@ -748,14 +899,14 @@ export default class KeboolaDriver
       detail: 'Set default schema',
       filterText: 'USE SCHEMA',
       sortText: '0001',
-      documentation: { value: 'Sets the default schema for subsequent queries. Example: `USE SCHEMA "in.c-main"`' },
+      documentation: { kind: 'markdown', value: 'Sets the default schema for subsequent queries. Example: `USE SCHEMA "in.c-main"`' },
     };
     completions['USE DATABASE'] = {
       label: 'USE DATABASE',
       detail: 'Set default database',
       filterText: 'USE DATABASE',
       sortText: '0001',
-      documentation: { value: 'Sets the default database for subsequent queries. Example: `USE DATABASE "my_db"`' },
+      documentation: { kind: 'markdown', value: 'Sets the default database for subsequent queries. Example: `USE DATABASE "my_db"`' },
     };
 
     // 4. Virtual table completions
@@ -793,7 +944,7 @@ export default class KeboolaDriver
         detail: vt.detail,
         filterText: vt.label,
         sortText: `0002${vt.label}`,
-        documentation: { value: vt.doc },
+        documentation: { kind: 'markdown', value: vt.doc },
       };
     }
 
@@ -886,12 +1037,15 @@ export default class KeboolaDriver
         // Retryable errors: 5xx and 429
         const retryable = response.status === 429 || response.status >= 500;
         if (!retryable || attempt >= MAX_RETRIES) {
-          if (response.status >= 500) {
-            throw new Error('Keboola service error. Please try again later.');
-          }
           const body = await response.json().catch(() => ({}));
+          const detail = body.message || body.error || body.exception || '';
+          if (response.status >= 500) {
+            throw new Error(
+              `Keboola service error (HTTP ${response.status}${detail ? ': ' + detail : ''}) on ${path}`
+            );
+          }
           throw new Error(
-            body.message || body.exception || `Unexpected API error (HTTP ${response.status}).`
+            detail || `Unexpected API error (HTTP ${response.status}).`
           );
         }
 

@@ -42,12 +42,12 @@
     "branchId": {
       "title": "Branch ID",
       "type": "string",
-      "description": "Leave empty to auto-detect default branch"
+      "description": "Auto-filled on first connect — you will pick from available branches"
     },
     "workspaceId": {
       "title": "Workspace ID",
       "type": "string",
-      "description": "Leave empty to auto-select newest workspace"
+      "description": "Auto-filled on first connect — you will pick from available workspaces"
     }
   },
   "required": ["keboolaStack", "token"]

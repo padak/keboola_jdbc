@@ -18,9 +18,9 @@
     "ui:help": "Only needed when 'Custom URL' is selected. e.g., connection.yourcompany.keboola.com"
   },
   "branchId": {
-    "ui:help": "Optional. Leave empty to auto-detect the default branch. Found in your Keboola project URL or via the Storage API."
+    "ui:help": "Leave empty — you will be prompted to select a branch when connecting. Or enter a specific Branch ID manually."
   },
   "workspaceId": {
-    "ui:help": "Optional. Leave empty to auto-select the newest workspace. Found in Transformations > Workspaces in your Keboola project."
+    "ui:help": "Leave empty — you will be prompted to select a workspace when connecting. Or enter a specific Workspace ID manually."
   }
 }

@@ -91,3 +91,16 @@ export const STATEMENT_TERMINAL_STATES = new Set(['completed', 'failed', 'cancel
  * Examples: USE SCHEMA "in.c-main", USE DATABASE my_db, use schema Foo;
  */
 export const USE_PATTERN = /^\s*USE\s+(?:SCHEMA|DATABASE)\s+"?([^"\s;]+)"?\s*;?\s*$/i;
+
+/**
+ * Pattern to match SHOW HISTORY / SHOW QUERY HISTORY commands.
+ * Both variants are supported, case-insensitive, with optional trailing semicolon.
+ * Examples: SHOW HISTORY, SHOW QUERY HISTORY, show history;
+ */
+export const SHOW_HISTORY_PATTERN = /^\s*SHOW\s+(?:QUERY\s+)?HISTORY\s*;?\s*$/i;
+
+/** Number of history entries fetched per request from the Query Service API */
+export const HISTORY_PAGE_SIZE = 500;
+
+/** Reason string sent when cancelling a query from VS Code */
+export const CANCEL_REASON = 'Cancelled by user from VS Code';

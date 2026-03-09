@@ -20,6 +20,9 @@ import {
   MAX_RETRIES,
   HTTP_TIMEOUT_MS,
   USE_PATTERN,
+  SHOW_HISTORY_PATTERN,
+  HISTORY_PAGE_SIZE,
+  CANCEL_REASON,
 } from '../constants';
 import {
   KeboolaCredentials,
@@ -226,9 +229,8 @@ export default class KeboolaDriver
             continue;
           }
 
-          // 3. Check SHOW HISTORY command
-          const trimmed = sql.trim().replace(/;\s*$/, '').trim().toUpperCase();
-          if (trimmed === 'SHOW HISTORY' || trimmed === 'SHOW QUERY HISTORY') {
+          // 3. Check SHOW HISTORY / SHOW QUERY HISTORY command
+          if (SHOW_HISTORY_PATTERN.test(sql)) {
             results.push(...(await this.fetchWorkspaceQueryHistory(sql)));
           } else {
             results.push(...(await this.executeQuery(sql)));
@@ -354,7 +356,7 @@ export default class KeboolaDriver
 
   private async fetchWorkspaceQueryHistory(originalSql: string): Promise<NSDatabase.IResult[]> {
     const history = await this.queryApiRequest<any>(
-      `/api/v1/branches/${this.branchId}/workspaces/${this.workspaceId}/queries?pageSize=500`
+      `/api/v1/branches/${this.branchId}/workspaces/${this.workspaceId}/queries?pageSize=${HISTORY_PAGE_SIZE}`
     );
 
     const cols = ['Job ID', 'Status', 'Query', 'Created At', 'Completed At'];
@@ -469,7 +471,7 @@ export default class KeboolaDriver
   private async cancelQuery(queryJobId: string): Promise<void> {
     await this.queryApiRequest(`/api/v1/queries/${queryJobId}/cancel`, {
       method: 'POST',
-      body: JSON.stringify({ reason: 'Cancelled by user from VS Code' }),
+      body: JSON.stringify({ reason: CANCEL_REASON }),
     });
   }
 

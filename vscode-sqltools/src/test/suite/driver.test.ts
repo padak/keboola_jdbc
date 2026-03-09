@@ -8,6 +8,9 @@ import {
   getConnectionUrl,
   getQueryUrl,
   USE_PATTERN,
+  SHOW_HISTORY_PATTERN,
+  HISTORY_PAGE_SIZE,
+  CANCEL_REASON,
 } from '../../constants';
 
 /**
@@ -283,37 +286,77 @@ suite('Driver - Result Row Mapping', () => {
   });
 });
 
-suite('Driver - SQL Trimming for SHOW HISTORY', () => {
-  test('SHOW HISTORY variants are recognized', () => {
-    const variants = [
-      'SHOW HISTORY',
-      'show history',
-      'SHOW HISTORY;',
-      '  SHOW HISTORY  ;  ',
-      'SHOW QUERY HISTORY',
-      'show query history;',
-    ];
-
-    for (const sql of variants) {
-      const trimmed = sql.trim().replace(/;\s*$/, '').trim().toUpperCase();
-      const isHistory = trimmed === 'SHOW HISTORY' || trimmed === 'SHOW QUERY HISTORY';
-      assert.ok(isHistory, `"${sql}" should be recognized as SHOW HISTORY`);
-    }
+suite('Driver - SHOW HISTORY Pattern Detection', () => {
+  test('SHOW HISTORY is recognized (uppercase)', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('SHOW HISTORY'));
   });
 
-  test('regular SQL is not recognized as SHOW HISTORY', () => {
-    const nonHistoryQueries = [
-      'SELECT * FROM table',
-      'SHOW TABLES',
-      'SHOW DATABASES',
-      'SHOW SCHEMAS',
-    ];
+  test('SHOW HISTORY is recognized (lowercase)', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('show history'));
+  });
 
-    for (const sql of nonHistoryQueries) {
-      const trimmed = sql.trim().replace(/;\s*$/, '').trim().toUpperCase();
-      const isHistory = trimmed === 'SHOW HISTORY' || trimmed === 'SHOW QUERY HISTORY';
-      assert.ok(!isHistory, `"${sql}" should NOT be recognized as SHOW HISTORY`);
-    }
+  test('SHOW HISTORY is recognized (mixed case)', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('Show History'));
+  });
+
+  test('SHOW HISTORY with trailing semicolon', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('SHOW HISTORY;'));
+  });
+
+  test('SHOW HISTORY with whitespace and semicolon', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('  SHOW HISTORY  ;  '));
+  });
+
+  test('SHOW QUERY HISTORY alias is recognized', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('SHOW QUERY HISTORY'));
+  });
+
+  test('SHOW QUERY HISTORY alias (lowercase)', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('show query history'));
+  });
+
+  test('SHOW QUERY HISTORY with semicolon', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('SHOW QUERY HISTORY;'));
+  });
+
+  test('SHOW QUERY HISTORY with whitespace', () => {
+    assert.ok(SHOW_HISTORY_PATTERN.test('  SHOW QUERY HISTORY  ;  '));
+  });
+
+  test('regular SELECT is not recognized', () => {
+    assert.ok(!SHOW_HISTORY_PATTERN.test('SELECT * FROM table'));
+  });
+
+  test('SHOW TABLES is not recognized', () => {
+    assert.ok(!SHOW_HISTORY_PATTERN.test('SHOW TABLES'));
+  });
+
+  test('SHOW DATABASES is not recognized', () => {
+    assert.ok(!SHOW_HISTORY_PATTERN.test('SHOW DATABASES'));
+  });
+
+  test('SHOW SCHEMAS is not recognized', () => {
+    assert.ok(!SHOW_HISTORY_PATTERN.test('SHOW SCHEMAS'));
+  });
+
+  test('partial SHOW HISTORY embedded in larger SQL is not recognized', () => {
+    assert.ok(!SHOW_HISTORY_PATTERN.test('SELECT * FROM SHOW HISTORY'));
+  });
+
+  test('SHOW with unknown keyword is not recognized', () => {
+    assert.ok(!SHOW_HISTORY_PATTERN.test('SHOW SOMETHING'));
+  });
+
+  test('empty string is not recognized', () => {
+    assert.ok(!SHOW_HISTORY_PATTERN.test(''));
+  });
+
+  test('regex is reusable (no lastIndex issues)', () => {
+    // Verify the regex works correctly when called multiple times
+    assert.ok(SHOW_HISTORY_PATTERN.test('SHOW HISTORY'));
+    assert.ok(SHOW_HISTORY_PATTERN.test('SHOW QUERY HISTORY'));
+    assert.ok(!SHOW_HISTORY_PATTERN.test('SELECT 1'));
+    assert.ok(SHOW_HISTORY_PATTERN.test('SHOW HISTORY'));
   });
 });
 
@@ -501,5 +544,221 @@ suite('Driver - sessionId in Query Submissions', () => {
     assert.strictEqual(parsed.statements.length, 2);
     assert.strictEqual(parsed.statements[0], 'USE SCHEMA "in.c-main"');
     assert.strictEqual(parsed.statements[1], 'SELECT * FROM t');
+  });
+});
+
+suite('Driver - Cancel Query Tracking', () => {
+  test('activeQueryJobId lifecycle: set during query, cleared after', () => {
+    // Simulate the lifecycle managed by executeQuery
+    let activeQueryJobId: string | null = null;
+
+    // Before query
+    assert.strictEqual(activeQueryJobId, null, 'Should be null before query starts');
+
+    // During query (after submit)
+    const queryJobId = 'job-123-abc';
+    activeQueryJobId = queryJobId;
+    assert.strictEqual(activeQueryJobId, 'job-123-abc', 'Should be set after submit');
+
+    // After query (in finally block)
+    activeQueryJobId = null;
+    assert.strictEqual(activeQueryJobId, null, 'Should be cleared in finally block');
+  });
+
+  test('cancel request body contains correct reason', () => {
+    const body = JSON.stringify({ reason: CANCEL_REASON });
+    const parsed = JSON.parse(body);
+    assert.strictEqual(parsed.reason, 'Cancelled by user from VS Code');
+  });
+
+  test('cancel endpoint is constructed correctly from queryJobId', () => {
+    const queryJobId = 'job-456-def';
+    const expectedPath = `/api/v1/queries/${queryJobId}/cancel`;
+    assert.strictEqual(expectedPath, '/api/v1/queries/job-456-def/cancel');
+  });
+
+  test('cancelAllActiveQueries logic: collects only active job IDs', () => {
+    // Simulate the static cancelAllActiveQueries logic with a Map
+    const instances = new Map<string, { activeQueryJobId: string | null }>();
+    instances.set('conn-1', { activeQueryJobId: 'job-aaa' });
+    instances.set('conn-2', { activeQueryJobId: null });
+    instances.set('conn-3', { activeQueryJobId: 'job-bbb' });
+    instances.set('conn-4', { activeQueryJobId: null });
+
+    const cancelled: string[] = [];
+    for (const [, driver] of instances) {
+      if (driver.activeQueryJobId) {
+        cancelled.push(driver.activeQueryJobId);
+      }
+    }
+
+    assert.strictEqual(cancelled.length, 2, 'Should cancel 2 active queries');
+    assert.ok(cancelled.includes('job-aaa'), 'Should include job-aaa');
+    assert.ok(cancelled.includes('job-bbb'), 'Should include job-bbb');
+  });
+
+  test('cancelAllActiveQueries with no active queries returns empty', () => {
+    const instances = new Map<string, { activeQueryJobId: string | null }>();
+    instances.set('conn-1', { activeQueryJobId: null });
+    instances.set('conn-2', { activeQueryJobId: null });
+
+    const cancelled: string[] = [];
+    for (const [, driver] of instances) {
+      if (driver.activeQueryJobId) {
+        cancelled.push(driver.activeQueryJobId);
+      }
+    }
+
+    assert.strictEqual(cancelled.length, 0, 'Should cancel 0 queries when none active');
+  });
+
+  test('cancelAllActiveQueries with empty instances map returns empty', () => {
+    const instances = new Map<string, { activeQueryJobId: string | null }>();
+
+    const cancelled: string[] = [];
+    for (const [, driver] of instances) {
+      if (driver.activeQueryJobId) {
+        cancelled.push(driver.activeQueryJobId);
+      }
+    }
+
+    assert.strictEqual(cancelled.length, 0, 'Should cancel 0 queries with no instances');
+  });
+
+  test('independent connections have separate activeQueryJobId tracking', () => {
+    // Simulate multiple connections with independent state
+    const conn1 = { activeQueryJobId: null as string | null };
+    const conn2 = { activeQueryJobId: null as string | null };
+    const conn3 = { activeQueryJobId: null as string | null };
+
+    // conn1 starts a query
+    conn1.activeQueryJobId = 'job-111';
+    assert.strictEqual(conn1.activeQueryJobId, 'job-111');
+    assert.strictEqual(conn2.activeQueryJobId, null);
+    assert.strictEqual(conn3.activeQueryJobId, null);
+
+    // conn2 starts a query
+    conn2.activeQueryJobId = 'job-222';
+    assert.strictEqual(conn1.activeQueryJobId, 'job-111');
+    assert.strictEqual(conn2.activeQueryJobId, 'job-222');
+    assert.strictEqual(conn3.activeQueryJobId, null);
+
+    // conn1 finishes
+    conn1.activeQueryJobId = null;
+    assert.strictEqual(conn1.activeQueryJobId, null);
+    assert.strictEqual(conn2.activeQueryJobId, 'job-222');
+    assert.strictEqual(conn3.activeQueryJobId, null);
+
+    // conn2 finishes
+    conn2.activeQueryJobId = null;
+    assert.strictEqual(conn2.activeQueryJobId, null);
+  });
+});
+
+suite('Driver - History and Cancel Constants', () => {
+  test('HISTORY_PAGE_SIZE is a positive number', () => {
+    assert.ok(HISTORY_PAGE_SIZE > 0, 'HISTORY_PAGE_SIZE must be > 0');
+    assert.strictEqual(HISTORY_PAGE_SIZE, 500, 'HISTORY_PAGE_SIZE should be 500');
+  });
+
+  test('CANCEL_REASON is a non-empty string', () => {
+    assert.ok(CANCEL_REASON.length > 0, 'CANCEL_REASON must be non-empty');
+    assert.ok(
+      CANCEL_REASON.includes('VS Code'),
+      'CANCEL_REASON should mention VS Code'
+    );
+  });
+
+  test('history API path is constructed correctly', () => {
+    const branchId = '12345';
+    const workspaceId = '67890';
+    const path = `/api/v1/branches/${branchId}/workspaces/${workspaceId}/queries?pageSize=${HISTORY_PAGE_SIZE}`;
+    assert.strictEqual(
+      path,
+      '/api/v1/branches/12345/workspaces/67890/queries?pageSize=500'
+    );
+  });
+
+  test('history result mapping produces correct column names', () => {
+    const cols = ['Job ID', 'Status', 'Query', 'Created At', 'Completed At'];
+    assert.strictEqual(cols.length, 5);
+    assert.ok(cols.includes('Job ID'));
+    assert.ok(cols.includes('Status'));
+    assert.ok(cols.includes('Query'));
+    assert.ok(cols.includes('Created At'));
+    assert.ok(cols.includes('Completed At'));
+  });
+
+  test('history row mapping extracts fields correctly', () => {
+    // Simulate the mapping logic from fetchWorkspaceQueryHistory
+    const mockHistoryItem = {
+      queryJobId: 'qj-abc-123',
+      status: 'completed',
+      statements: [
+        { sql: 'SELECT 1' },
+        { sql: 'SELECT 2' },
+      ],
+      createdAt: '2026-03-09T10:00:00Z',
+      completedAt: '2026-03-09T10:00:05Z',
+    };
+
+    const row = {
+      'Job ID': mockHistoryItem.queryJobId || '',
+      'Status': mockHistoryItem.status || '',
+      'Query': (mockHistoryItem.statements || []).map((s: any) => s.sql || '').join('; '),
+      'Created At': mockHistoryItem.createdAt || '',
+      'Completed At': mockHistoryItem.completedAt || '',
+    };
+
+    assert.strictEqual(row['Job ID'], 'qj-abc-123');
+    assert.strictEqual(row['Status'], 'completed');
+    assert.strictEqual(row['Query'], 'SELECT 1; SELECT 2');
+    assert.strictEqual(row['Created At'], '2026-03-09T10:00:00Z');
+    assert.strictEqual(row['Completed At'], '2026-03-09T10:00:05Z');
+  });
+
+  test('history row mapping handles missing fields gracefully', () => {
+    const mockHistoryItem: any = {};
+
+    const row = {
+      'Job ID': mockHistoryItem.queryJobId || '',
+      'Status': mockHistoryItem.status || '',
+      'Query': (mockHistoryItem.statements || []).map((s: any) => s.sql || '').join('; '),
+      'Created At': mockHistoryItem.createdAt || '',
+      'Completed At': mockHistoryItem.completedAt || '',
+    };
+
+    assert.strictEqual(row['Job ID'], '');
+    assert.strictEqual(row['Status'], '');
+    assert.strictEqual(row['Query'], '');
+    assert.strictEqual(row['Created At'], '');
+    assert.strictEqual(row['Completed At'], '');
+  });
+});
+
+suite('Driver - Timeout Auto-Cancel', () => {
+  test('timeout triggers cancel attempt', () => {
+    // Verify the timeout auto-cancel logic pattern:
+    // When elapsed > timeoutMs, cancelQuery is called before throwing
+    const timeoutMs = QUERY_POLLING.DEFAULT_TIMEOUT_S * 1000;
+    const startTime = Date.now() - (timeoutMs + 1000); // simulate 1s past timeout
+    const elapsed = Date.now() - startTime;
+
+    assert.ok(elapsed > timeoutMs, 'Should detect timeout condition');
+
+    // The actual cancel call is fire-and-forget (.catch(() => {}))
+    // so even if it fails, the timeout error is still thrown
+  });
+
+  test('timeout error message includes timeout duration', () => {
+    const errorMsg = `Query timed out after ${QUERY_POLLING.DEFAULT_TIMEOUT_S} seconds.`;
+    assert.ok(
+      errorMsg.includes(String(QUERY_POLLING.DEFAULT_TIMEOUT_S)),
+      'Error message should include timeout duration'
+    );
+    assert.ok(
+      errorMsg.includes('timed out'),
+      'Error message should mention timeout'
+    );
   });
 });

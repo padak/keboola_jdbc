@@ -1,1 +1,2 @@
 jdbc-driver/dist/*.jar filter=lfs diff=lfs merge=lfs -text
+vscode-sqltools/dist/*.vsix filter=lfs diff=lfs merge=lfs -text

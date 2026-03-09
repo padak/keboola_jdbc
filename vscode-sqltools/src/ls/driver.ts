@@ -17,6 +17,7 @@ import {
   MAX_RESULT_ROWS,
   MAX_RETRIES,
   HTTP_TIMEOUT_MS,
+  USE_PATTERN,
 } from '../constants';
 import {
   KeboolaCredentials,
@@ -61,6 +62,8 @@ export default class KeboolaDriver
   private workspaceId = '';
   /** Session ID for server-side session persistence */
   private sessionId = '';
+  /** Currently active schema set via USE SCHEMA/DATABASE */
+  private currentSchema: string | null = null;
   /** Schema cache with TTL for sidebar metadata */
   private schemaCache = new SchemaCache();
 
@@ -109,6 +112,7 @@ export default class KeboolaDriver
     this.branchId = '';
     this.workspaceId = '';
     this.sessionId = '';
+    this.currentSchema = null;
     this.schemaCache.invalidate();
     this.connection = undefined as any;
   }
@@ -215,13 +219,32 @@ export default class KeboolaDriver
   }
 
   private async executeQuery(sql: string): Promise<NSDatabase.IResult[]> {
+    // Check if this is a USE SCHEMA/DATABASE command
+    const useMatch = sql.match(USE_PATTERN);
+    const isUseCommand = useMatch !== null;
+
+    if (isUseCommand) {
+      // Update local schema tracking
+      this.currentSchema = useMatch[1];
+      this.log.info(`Schema set to: ${this.currentSchema}`);
+    }
+
+    // Build statements array:
+    // - If currentSchema is set AND this is NOT a USE command, prepend USE SCHEMA
+    //   so both run in the same Snowflake session
+    // - Otherwise, just send the original SQL
+    const statements: string[] =
+      this.currentSchema && !isUseCommand
+        ? [`USE SCHEMA "${this.currentSchema}"`, sql]
+        : [sql];
+
     // 1. Submit the query job
     const submitResponse = await this.queryApiRequest<QueryJobResponse>(
       `/api/v1/branches/${this.branchId}/workspaces/${this.workspaceId}/queries`,
       {
         method: 'POST',
         body: JSON.stringify({
-          statements: [sql],
+          statements,
           sessionId: this.sessionId,
           wait: false,
         }),
@@ -239,8 +262,12 @@ export default class KeboolaDriver
       const jobResult = await this.pollQueryJob(queryJobId);
 
       if (jobResult.status === 'failed') {
+        // For multi-statement jobs, check the last statement for errors (the actual query)
+        const jobStatements = jobResult.statements || [];
+        const lastStmt = jobStatements[jobStatements.length - 1];
         const errorMsg =
-          jobResult.statements?.[0]?.error?.message ||
+          lastStmt?.error?.message ||
+          jobStatements[0]?.error?.message ||
           'Query execution failed';
         return [this.buildErrorResult(sql, errorMsg)];
       }
@@ -249,20 +276,37 @@ export default class KeboolaDriver
         return [this.buildErrorResult(sql, 'Query was canceled.')];
       }
 
-      // 3. Fetch results for each completed statement
+      // 3. For multi-statement jobs (with USE SCHEMA prepended), use only the LAST
+      //    statement's results (the actual user query), not the USE SCHEMA results.
+      const jobStatements = jobResult.statements || [];
       const results: NSDatabase.IResult[] = [];
-      const statements = jobResult.statements || [];
 
-      for (const stmt of statements) {
-        if (stmt.status === 'completed') {
-          const resultData = await this.fetchAllPages(queryJobId, stmt.id);
+      if (statements.length > 1 && jobStatements.length > 1) {
+        // Multi-statement: only process the last statement (the actual query)
+        const lastStmt = jobStatements[jobStatements.length - 1];
+        if (lastStmt.status === 'completed') {
+          const resultData = await this.fetchAllPages(queryJobId, lastStmt.id);
           results.push(this.mapResultToSQLTools(sql, resultData));
-        } else if (stmt.status === 'failed') {
+        } else if (lastStmt.status === 'failed') {
           results.push(
-            this.buildErrorResult(sql, stmt.error?.message || 'Statement execution failed')
+            this.buildErrorResult(sql, lastStmt.error?.message || 'Statement execution failed')
           );
         } else {
-          results.push(this.buildErrorResult(sql, `Statement status: ${stmt.status}`));
+          results.push(this.buildErrorResult(sql, `Statement status: ${lastStmt.status}`));
+        }
+      } else {
+        // Single statement: process all results as before
+        for (const stmt of jobStatements) {
+          if (stmt.status === 'completed') {
+            const resultData = await this.fetchAllPages(queryJobId, stmt.id);
+            results.push(this.mapResultToSQLTools(sql, resultData));
+          } else if (stmt.status === 'failed') {
+            results.push(
+              this.buildErrorResult(sql, stmt.error?.message || 'Statement execution failed')
+            );
+          } else {
+            results.push(this.buildErrorResult(sql, `Statement status: ${stmt.status}`));
+          }
         }
       }
 

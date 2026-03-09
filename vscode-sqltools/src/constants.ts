@@ -84,3 +84,10 @@ export const TERMINAL_STATES = new Set(['completed', 'failed', 'canceled']);
 
 /** Terminal states for individual statements within a query job */
 export const STATEMENT_TERMINAL_STATES = new Set(['completed', 'failed', 'canceled', 'notExecuted']);
+
+/**
+ * Pattern to match USE SCHEMA/DATABASE commands for local schema tracking.
+ * Captures the schema/database name with or without double quotes.
+ * Examples: USE SCHEMA "in.c-main", USE DATABASE my_db, use schema Foo;
+ */
+export const USE_PATTERN = /^\s*USE\s+(?:SCHEMA|DATABASE)\s+"?([^"\s;]+)"?\s*;?\s*$/i;

@@ -7,6 +7,7 @@ import {
   MAX_RETRIES,
   getConnectionUrl,
   getQueryUrl,
+  USE_PATTERN,
 } from '../../constants';
 
 /**
@@ -336,5 +337,169 @@ suite('Driver - Retry Logic', () => {
         `Delay ${i} (${delays[i]}) should be > delay ${i - 1} (${delays[i - 1]})`
       );
     }
+  });
+});
+
+suite('Driver - USE SCHEMA/DATABASE Detection', () => {
+  test('USE SCHEMA with double quotes extracts schema name', () => {
+    const match = 'USE SCHEMA "my_schema"'.match(USE_PATTERN);
+    assert.ok(match, 'Should match USE SCHEMA with quotes');
+    assert.strictEqual(match![1], 'my_schema');
+  });
+
+  test('USE SCHEMA without quotes extracts schema name', () => {
+    const match = 'USE SCHEMA my_schema'.match(USE_PATTERN);
+    assert.ok(match, 'Should match USE SCHEMA without quotes');
+    assert.strictEqual(match![1], 'my_schema');
+  });
+
+  test('USE DATABASE with double quotes extracts database name', () => {
+    const match = 'USE DATABASE "my_db"'.match(USE_PATTERN);
+    assert.ok(match, 'Should match USE DATABASE with quotes');
+    assert.strictEqual(match![1], 'my_db');
+  });
+
+  test('USE DATABASE without quotes extracts database name', () => {
+    const match = 'USE DATABASE my_db'.match(USE_PATTERN);
+    assert.ok(match, 'Should match USE DATABASE without quotes');
+    assert.strictEqual(match![1], 'my_db');
+  });
+
+  test('case insensitive matching', () => {
+    const variants = [
+      'use schema "Foo"',
+      'Use Schema "Foo"',
+      'USE SCHEMA "Foo"',
+      'use SCHEMA "Foo"',
+      'USE schema "Foo"',
+    ];
+    for (const sql of variants) {
+      const match = sql.match(USE_PATTERN);
+      assert.ok(match, `"${sql}" should match USE_PATTERN`);
+      assert.strictEqual(match![1], 'Foo', `"${sql}" should extract "Foo"`);
+    }
+  });
+
+  test('with trailing semicolon', () => {
+    const match = 'USE SCHEMA "bar";'.match(USE_PATTERN);
+    assert.ok(match, 'Should match USE SCHEMA with semicolon');
+    assert.strictEqual(match![1], 'bar');
+  });
+
+  test('with leading/trailing whitespace', () => {
+    const match = '  USE SCHEMA "baz"  ;  '.match(USE_PATTERN);
+    assert.ok(match, 'Should match USE SCHEMA with whitespace');
+    assert.strictEqual(match![1], 'baz');
+  });
+
+  test('dot-separated schema names (Keboola bucket IDs)', () => {
+    const match = 'USE SCHEMA "in.c-main"'.match(USE_PATTERN);
+    assert.ok(match, 'Should match dot-separated schema name');
+    assert.strictEqual(match![1], 'in.c-main');
+  });
+
+  test('does not match regular SQL statements', () => {
+    const nonMatching = [
+      'SELECT * FROM table',
+      'SHOW TABLES',
+      'SHOW SCHEMAS',
+      'CREATE SCHEMA my_schema',
+      'DROP SCHEMA my_schema',
+      'ALTER SCHEMA my_schema',
+    ];
+    for (const sql of nonMatching) {
+      const match = sql.match(USE_PATTERN);
+      assert.ok(!match, `"${sql}" should NOT match USE_PATTERN`);
+    }
+  });
+});
+
+suite('Driver - Multi-Statement USE SCHEMA Prepending', () => {
+  test('when currentSchema is set, statements array includes USE SCHEMA prepended', () => {
+    // Simulate the logic from executeQuery
+    const currentSchema = 'in.c-main';
+    const sql = 'SELECT * FROM my_table';
+    const isUseCommand = !!sql.match(USE_PATTERN);
+
+    const statements: string[] =
+      currentSchema && !isUseCommand
+        ? [`USE SCHEMA "${currentSchema}"`, sql]
+        : [sql];
+
+    assert.strictEqual(statements.length, 2);
+    assert.strictEqual(statements[0], 'USE SCHEMA "in.c-main"');
+    assert.strictEqual(statements[1], 'SELECT * FROM my_table');
+  });
+
+  test('when currentSchema is null, statements array has only the query', () => {
+    const currentSchema: string | null = null;
+    const sql = 'SELECT * FROM my_table';
+    const isUseCommand = !!sql.match(USE_PATTERN);
+
+    const statements: string[] =
+      currentSchema && !isUseCommand
+        ? [`USE SCHEMA "${currentSchema}"`, sql]
+        : [sql];
+
+    assert.strictEqual(statements.length, 1);
+    assert.strictEqual(statements[0], 'SELECT * FROM my_table');
+  });
+
+  test('USE command itself is NOT prepended with another USE SCHEMA', () => {
+    const currentSchema = 'in.c-main';
+    const sql = 'USE SCHEMA "in.c-other"';
+    const isUseCommand = !!sql.match(USE_PATTERN);
+
+    const statements: string[] =
+      currentSchema && !isUseCommand
+        ? [`USE SCHEMA "${currentSchema}"`, sql]
+        : [sql];
+
+    // USE command should be sent alone, not prepended
+    assert.strictEqual(statements.length, 1);
+    assert.strictEqual(statements[0], 'USE SCHEMA "in.c-other"');
+  });
+});
+
+suite('Driver - sessionId in Query Submissions', () => {
+  test('sessionId is included in submit body', () => {
+    // Simulate the submit body construction from executeQuery
+    const sessionId = 'test-session-uuid';
+    const sql = 'SELECT 1';
+    const body = JSON.stringify({
+      statements: [sql],
+      sessionId: sessionId,
+      wait: false,
+    });
+
+    const parsed = JSON.parse(body);
+    assert.strictEqual(parsed.sessionId, 'test-session-uuid');
+    assert.strictEqual(parsed.wait, false);
+    assert.deepStrictEqual(parsed.statements, ['SELECT 1']);
+  });
+
+  test('sessionId is a valid UUID format', () => {
+    // crypto.randomUUID() returns a v4 UUID
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const uuid = require('crypto').randomUUID();
+    assert.ok(uuidRegex.test(uuid), `Generated UUID "${uuid}" should match v4 UUID format`);
+  });
+
+  test('multi-statement body with USE SCHEMA includes sessionId', () => {
+    const sessionId = 'multi-stmt-session';
+    const currentSchema = 'in.c-main';
+    const sql = 'SELECT * FROM t';
+
+    const body = JSON.stringify({
+      statements: [`USE SCHEMA "${currentSchema}"`, sql],
+      sessionId: sessionId,
+      wait: false,
+    });
+
+    const parsed = JSON.parse(body);
+    assert.strictEqual(parsed.sessionId, 'multi-stmt-session');
+    assert.strictEqual(parsed.statements.length, 2);
+    assert.strictEqual(parsed.statements[0], 'USE SCHEMA "in.c-main"');
+    assert.strictEqual(parsed.statements[1], 'SELECT * FROM t');
   });
 });

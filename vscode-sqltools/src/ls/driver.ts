@@ -7,6 +7,7 @@ import {
   IQueryOptions,
 } from '@sqltools/types';
 import queries from './queries';
+import { SchemaCache } from './schema-cache';
 import {
   getConnectionUrl,
   getQueryUrl,
@@ -60,6 +61,8 @@ export default class KeboolaDriver
   private workspaceId = '';
   /** Session ID for server-side session persistence */
   private sessionId = '';
+  /** Schema cache with TTL for sidebar metadata */
+  private schemaCache = new SchemaCache();
 
   /** Typed accessor for credentials */
   private get creds(): KeboolaCredentials {
@@ -106,6 +109,7 @@ export default class KeboolaDriver
     this.branchId = '';
     this.workspaceId = '';
     this.sessionId = '';
+    this.schemaCache.invalidate();
     this.connection = undefined as any;
   }
 
@@ -498,7 +502,9 @@ export default class KeboolaDriver
   }
 
   private async getBuckets(): Promise<MConnectionExplorer.IChildItem[]> {
-    const buckets = await this.storageApiRequest<BucketInfo[]>('/v2/storage/buckets');
+    const buckets = await this.schemaCache.getBuckets<BucketInfo>(
+      () => this.storageApiRequest<BucketInfo[]>('/v2/storage/buckets')
+    );
     return buckets.map((bucket) => ({
       label: bucket.id,
       type: ContextValue.SCHEMA,
@@ -512,8 +518,11 @@ export default class KeboolaDriver
   private async getTablesForBucket(
     bucketId: string
   ): Promise<MConnectionExplorer.IChildItem[]> {
-    const tables = await this.storageApiRequest<TableInfo[]>(
-      `/v2/storage/buckets/${encodeURIComponent(bucketId)}/tables`
+    const tables = await this.schemaCache.getTables<TableInfo>(
+      bucketId,
+      () => this.storageApiRequest<TableInfo[]>(
+        `/v2/storage/buckets/${encodeURIComponent(bucketId)}/tables`
+      )
     );
     return tables.map((table) => ({
       label: table.name,

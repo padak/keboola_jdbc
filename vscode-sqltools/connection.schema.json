@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "name": {
+      "title": "Connection Name",
+      "type": "string",
+      "minLength": 1,
+      "default": "Keboola"
+    },
+    "keboolaStack": {
+      "title": "Keboola Stack",
+      "type": "string",
+      "enum": [
+        "connection.keboola.com",
+        "connection.us-east4.gcp.keboola.com",
+        "connection.eu-central-1.keboola.com",
+        "connection.north-europe.azure.keboola.com",
+        "connection.europe-west3.gcp.keboola.com",
+        "custom"
+      ],
+      "enumNames": [
+        "AWS US (Virginia)",
+        "GCP US (Virginia)",
+        "AWS EU (Frankfurt)",
+        "Azure EU (Ireland)",
+        "GCP EU (Frankfurt)",
+        "Custom URL"
+      ],
+      "default": "connection.keboola.com"
+    },
+    "customConnectionUrl": {
+      "title": "Custom Connection URL",
+      "type": "string",
+      "description": "Full connection URL for custom/single-tenant stacks (e.g., connection.yourcompany.keboola.com)"
+    },
+    "token": {
+      "title": "Storage API Token",
+      "type": "string",
+      "minLength": 1
+    },
+    "branchId": {
+      "title": "Branch ID",
+      "type": "string",
+      "description": "Leave empty to auto-detect default branch"
+    },
+    "workspaceId": {
+      "title": "Workspace ID",
+      "type": "string",
+      "description": "Leave empty to auto-select newest workspace"
+    }
+  },
+  "required": ["keboolaStack", "token"]
+}

@@ -1,0 +1,83 @@
+{
+  "name": "sqltools-keboola-driver",
+  "displayName": "Keboola Driver for SQLTools",
+  "description": "Connect to Keboola Query Service from VS Code via SQLTools",
+  "version": "0.1.0",
+  "publisher": "keboola",
+  "license": "MIT",
+  "icon": "icons/keboola-logo.png",
+  "engines": {
+    "vscode": "^1.87.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "sqltools-driver",
+    "keboola",
+    "sqltools",
+    "sql",
+    "query-service"
+  ],
+  "extensionDependencies": [
+    "mtxr.sqltools"
+  ],
+  "activationEvents": [
+    "*",
+    "onLanguage:sql",
+    "onCommand:sqltools.*"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsup",
+    "watch": "tsup --watch",
+    "pretest": "npm run compile && tsc -p tsconfig.test.json",
+    "test": "vscode-test",
+    "package": "vsce package --allow-star-activation",
+    "publish": "vsce publish"
+  },
+  "tsup": {
+    "entry": [
+      "src/extension.ts",
+      "src/ls/plugin.ts"
+    ],
+    "outDir": "out",
+    "format": [
+      "cjs"
+    ],
+    "sourcemap": true,
+    "external": [
+      "vscode"
+    ],
+    "clean": true
+  },
+  "devDependencies": {
+    "@sqltools/base-driver": "latest",
+    "@sqltools/types": "latest",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.87.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.0.0",
+    "ajv": "^8.18.0",
+    "mocha": "^11.7.5",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "keboola.cancelQuery",
+        "title": "Keboola: Cancel Running Query",
+        "category": "SQLTools"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/keboola/keboola-jdbc.git",
+    "directory": "vscode-sqltools"
+  }
+}

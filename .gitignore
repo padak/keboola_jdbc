@@ -2,11 +2,19 @@ docs/research.md
 docs/AGENT-REPORTS/
 .claude/
 .audit/
-target/
-dependency-reduced-pom.xml
 logs/
 *.log
 .env
 .env.*
 .vscode/
 .DS_Store
+
+# Java / JDBC driver
+jdbc-driver/target/
+jdbc-driver/dependency-reduced-pom.xml
+
+# VSCode SQLTools extension
+vscode-sqltools/node_modules/
+vscode-sqltools/out/
+vscode-sqltools/*.vsix
+vscode-sqltools/.vscode-test/

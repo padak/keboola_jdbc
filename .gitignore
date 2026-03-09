@@ -10,6 +10,7 @@ logs/
 .DS_Store
 
 # Java / JDBC driver
+target/
 jdbc-driver/target/
 jdbc-driver/dependency-reduced-pom.xml
 

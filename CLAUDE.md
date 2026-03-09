@@ -18,6 +18,8 @@ JDBC mapping: Catalog = Database (from Snowflake), Schema = Schema (from Snowfla
 
 ### JDBC Driver
 
+**IMPORTANT: Always `cd jdbc-driver` before running `mvn` commands.** Running Maven from the repo root creates a `target/` directory in the wrong place.
+
 ```bash
 cd jdbc-driver
 mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.1.3.jar)

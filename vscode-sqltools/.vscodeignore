@@ -1,0 +1,12 @@
+src/
+*.ts
+tsconfig*
+node_modules/
+.vscode-test/
+tests/
+.vscode-test.mjs
+.gitignore
+out/test/
+out/constants.*
+out/types.*
+out/ls/queries.*

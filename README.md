@@ -19,7 +19,7 @@ make dist                  # Copy jar to dist/
 
 See [jdbc-driver/README.md](jdbc-driver/) for full documentation.
 
-### [vscode-sqltools/](vscode-sqltools/) -- VSCode SQLTools Extension (v2.1.3)
+### [vscode-sqltools/](vscode-sqltools/) -- VSCode SQLTools Extension (v2.1.4)
 
 TypeScript extension for Visual Studio Code that integrates with the [SQLTools](https://marketplace.visualstudio.com/items?itemName=mtxr.sqltools) ecosystem. Provides Keboola connectivity directly in VSCode.
 
@@ -42,7 +42,7 @@ npm run package                 # Create .vsix
 
 **Install:** Download the VSIX from [vscode-sqltools/dist/](vscode-sqltools/dist/) and install via:
 ```bash
-code --install-extension vscode-sqltools/dist/sqltools-keboola-driver-2.1.3.vsix
+code --install-extension vscode-sqltools/dist/sqltools-keboola-driver-2.1.4.vsix
 ```
 
 ## Repository Structure

@@ -45,6 +45,34 @@ npm run package                 # Create .vsix
 code --install-extension vscode-sqltools/dist/sqltools-keboola-driver-2.1.4.vsix
 ```
 
+## Prerequisites
+
+### Storage API Token
+
+Both the JDBC driver and VSCode extension require a Keboola Storage API token. The token **must not** be a bucket-scoped token -- it needs access to workspaces and the Query Service.
+
+**How to create the token:**
+
+1. Go to your Keboola project
+2. Navigate to **Settings** > **API Tokens**
+3. Click **New Token**
+4. Set a description (e.g. "DBeaver access")
+5. Under **Access to buckets**, select **All buckets** (or at least the buckets you need to query)
+6. Under **Access to components**, you can leave it at **None** (not required for SQL access)
+7. Optionally set token expiration
+8. Click **Create**
+
+**Minimum required permissions:**
+- Read access to buckets you want to query
+- The token must be able to list workspaces (`GET /v2/storage/branch/{id}/workspaces`)
+- A workspace must already exist in the project (the driver auto-selects the newest one)
+
+**What does NOT work:**
+- Bucket-scoped tokens with limited permissions -- the driver needs to list branches and workspaces during connection setup
+- Tokens from a different project than the workspace
+
+> **Tip:** If you get connection errors, first verify your token works by visiting `https://connection.keboola.com/v2/storage/tokens/verify` with the header `X-StorageApi-Token: <your-token>`.
+
 ## Repository Structure
 
 ```

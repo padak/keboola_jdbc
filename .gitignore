@@ -10,3 +10,4 @@ logs/
 .env.*
 .vscode/
 .DS_Store
+.vscode-test/

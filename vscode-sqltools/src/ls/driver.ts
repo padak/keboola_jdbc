@@ -10,6 +10,7 @@ import queries from './queries';
 import { SchemaCache } from './schema-cache';
 import * as virtualTables from './virtual-tables';
 import * as helpCommand from './help-command';
+import { prepareValue } from './epoch-converter';
 import {
   getConnectionUrl,
   getQueryUrl,
@@ -587,11 +588,14 @@ export default class KeboolaDriver
   // -- Result Mapping ---------------------------------------------------------
 
   private mapResultToSQLTools(sql: string, resultData: QueryResultResponse): NSDatabase.IResult {
-    const columns: string[] = (resultData.columns || []).map((c) => c.name);
+    const columnMeta = resultData.columns || [];
+    const columns: string[] = columnMeta.map((c) => c.name);
     const rows: any[] = (resultData.data || []).map((row: any[]) => {
       const obj: Record<string, any> = {};
       columns.forEach((col, i) => {
-        obj[col] = row[i];
+        const value = row[i];
+        const type = columnMeta[i]?.type;
+        obj[col] = value != null ? prepareValue(String(value), type) : value;
       });
       return obj;
     });

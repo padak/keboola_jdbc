@@ -4,6 +4,7 @@ import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.model.QueryResult;
 import com.keboola.jdbc.http.model.ResultColumn;
+import com.keboola.jdbc.util.EpochConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -63,7 +64,11 @@ public class KeboolaResultSet implements ResultSet {
     /** Whether the last fetched value was null. */
     private boolean lastWasNull = false;
 
-    /** Whether there are more pages to fetch from the server. */
+    /**
+     * Whether there are more pages to fetch from the server.
+     * Determined by checking if the last fetched page was full (= PAGE_SIZE rows),
+     * because the Query Service API does not reliably return a hasMorePages flag.
+     */
     private boolean hasMorePages = true;
 
     /** The first page of results, retained for backendContext access. */
@@ -88,7 +93,7 @@ public class KeboolaResultSet implements ResultSet {
         this.statementId = statementId;
         this.columns = firstPage.getColumns();
         this.currentPage = firstPage.getData();
-        this.hasMorePages = firstPage.isHasMorePages();
+        this.hasMorePages = currentPage.size() >= PAGE_SIZE;
         this.firstPageResult = firstPage;
         LOG.debug("KeboolaResultSet created: statementId={}, columns={}, firstPageRows={}",
                 statementId, columns.size(), currentPage.size());
@@ -138,7 +143,7 @@ public class KeboolaResultSet implements ResultSet {
         try {
             QueryResult nextResult = client.fetchResults(queryJobId, statementId, totalRowsFetched, PAGE_SIZE);
             currentPage = nextResult.getData();
-            hasMorePages = nextResult.isHasMorePages();
+            hasMorePages = currentPage.size() >= PAGE_SIZE;
             currentRowIndex = -1;
             LOG.debug("Fetched {} rows, hasMorePages={}", currentPage.size(), hasMorePages);
         } catch (Exception e) {
@@ -186,13 +191,25 @@ public class KeboolaResultSet implements ResultSet {
         return value;
     }
 
+    /**
+     * Returns the Snowflake type name for the given 1-based column index.
+     */
+    private String getSnowflakeType(int columnIndex) {
+        if (columnIndex >= 1 && columnIndex <= columns.size()) {
+            return columns.get(columnIndex - 1).getType();
+        }
+        return null;
+    }
+
     // -------------------------------------------------------------------------
     // getString and typed getters
     // -------------------------------------------------------------------------
 
     @Override
     public String getString(int columnIndex) throws SQLException {
-        return getRawValue(columnIndex);
+        String raw = getRawValue(columnIndex);
+        if (raw == null) return null;
+        return EpochConverter.formatValue(raw, getSnowflakeType(columnIndex));
     }
 
     @Override
@@ -371,8 +388,12 @@ public class KeboolaResultSet implements ResultSet {
             return null;
         }
         try {
+            String sfType = getSnowflakeType(columnIndex);
+            if (EpochConverter.isDateType(sfType)) {
+                return EpochConverter.toDate(val);
+            }
             return Date.valueOf(val.trim());
-        } catch (IllegalArgumentException e) {
+        } catch (Exception e) {
             throw new SQLException("Cannot convert '" + val + "' to Date", e);
         }
     }
@@ -399,8 +420,12 @@ public class KeboolaResultSet implements ResultSet {
             return null;
         }
         try {
+            String sfType = getSnowflakeType(columnIndex);
+            if (EpochConverter.isTimeType(sfType)) {
+                return EpochConverter.toTime(val);
+            }
             return Time.valueOf(val.trim());
-        } catch (IllegalArgumentException e) {
+        } catch (Exception e) {
             throw new SQLException("Cannot convert '" + val + "' to Time", e);
         }
     }
@@ -427,8 +452,12 @@ public class KeboolaResultSet implements ResultSet {
             return null;
         }
         try {
+            String sfType = getSnowflakeType(columnIndex);
+            if (EpochConverter.isTimestampType(sfType)) {
+                return EpochConverter.toTimestamp(val);
+            }
             return Timestamp.valueOf(val.trim());
-        } catch (IllegalArgumentException e) {
+        } catch (Exception e) {
             throw new SQLException("Cannot convert '" + val + "' to Timestamp", e);
         }
     }
@@ -450,7 +479,23 @@ public class KeboolaResultSet implements ResultSet {
 
     @Override
     public Object getObject(int columnIndex) throws SQLException {
-        return getRawValue(columnIndex);
+        String val = getRawValue(columnIndex);
+        if (val == null) return null;
+        String sfType = getSnowflakeType(columnIndex);
+        try {
+            if (EpochConverter.isDateType(sfType)) {
+                return EpochConverter.toDate(val);
+            }
+            if (EpochConverter.isTimestampType(sfType)) {
+                return EpochConverter.toTimestamp(val);
+            }
+            if (EpochConverter.isTimeType(sfType)) {
+                return EpochConverter.toTime(val);
+            }
+        } catch (Exception e) {
+            LOG.debug("Could not convert value '{}' for type '{}', returning as String", val, sfType);
+        }
+        return val;
     }
 
     @Override

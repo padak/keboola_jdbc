@@ -62,21 +62,31 @@ cp sqltools-keboola-driver-*.vsix dist/
 ## Release Checklist
 
 **MANDATORY: Before merging to main and creating a release, ALWAYS run tests first.**
+**Both projects share the same version number** (e.g. 2.1.4). Always bump both together.
 
 ### JDBC Driver
 1. Run unit tests: `cd jdbc-driver && mvn test`
 2. Run E2E tests: `cd jdbc-driver && KEBOOLA_TOKEN=xxx KEBOOLA_WORKSPACE=yyy mvn verify -Pkeboola-integration`
 3. Fix any failures
-4. Bump version in pom.xml + DriverConfig + Makefile, then `make dist`
-5. Commit, tag, `gh release create`
+4. Bump version in **3 files**: `pom.xml`, `DriverConfig.java` (`DRIVER_VERSION`), `Makefile` (`JAR_NAME`)
+5. Build and copy jar: `cd jdbc-driver && make dist`
+6. Verify jar exists in `jdbc-driver/dist/`
 
 ### VSCode Extension
 1. Run tests: `cd vscode-sqltools && npm test`
-2. Bump version in package.json
-3. `npm run package && cp sqltools-keboola-driver-*.vsix dist/`
-4. Commit, tag, release
+2. Bump version in `package.json` (`"version"` field)
+3. Build VSIX: `cd vscode-sqltools && npm run package`
+4. Copy to dist: `cp sqltools-keboola-driver-*.vsix dist/`
+5. Verify VSIX exists in `vscode-sqltools/dist/`
 
-**Both projects share the same version number** (e.g. 2.1.4).
+### Shared Files
+- Update version references in `README.md` (download links, install commands)
+- Update version references in `CLAUDE.md`
+
+### After Merge
+1. `git checkout main && git pull`
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`
+3. `gh release create vX.Y.Z jdbc-driver/dist/keboola-jdbc-driver-X.Y.Z.jar --title "vX.Y.Z"`
 
 ## Architecture
 

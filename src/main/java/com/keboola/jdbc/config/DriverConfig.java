@@ -13,7 +13,7 @@ public final class DriverConfig {
     // --- Driver identity ---
 
     public static final String DRIVER_NAME    = "Keboola JDBC Driver";
-    public static final String DRIVER_VERSION = "3.0.2-experimental";
+    public static final String DRIVER_VERSION = "3.0.3-experimental";
     public static final int    MAJOR_VERSION  = 3;
     public static final int    MINOR_VERSION  = 0;
 

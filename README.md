@@ -4,7 +4,7 @@ Monorepo for tools that connect SQL clients to [Keboola](https://www.keboola.com
 
 ## Projects
 
-### [jdbc-driver/](jdbc-driver/) -- Keboola JDBC Driver (v2.1.3)
+### [jdbc-driver/](jdbc-driver/) -- Keboola JDBC Driver (v2.1.4)
 
 JDBC driver for DBeaver, DataGrip, and any JDBC-compatible client. Provides auto-discovery of branches and workspaces, virtual `_keboola.*` tables, `KEBOOLA HELP` command, and full Snowflake metadata via `SHOW` commands.
 
@@ -15,7 +15,7 @@ mvn test                   # Run unit tests
 make dist                  # Copy jar to dist/
 ```
 
-**Download:** [jdbc-driver/dist/keboola-jdbc-driver-2.1.3.jar](jdbc-driver/dist/keboola-jdbc-driver-2.1.3.jar)
+**Download:** [jdbc-driver/dist/keboola-jdbc-driver-2.1.4.jar](jdbc-driver/dist/keboola-jdbc-driver-2.1.4.jar)
 
 See [jdbc-driver/README.md](jdbc-driver/) for full documentation.
 

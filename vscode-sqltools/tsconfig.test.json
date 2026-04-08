@@ -12,6 +12,6 @@
     "skipLibCheck": true,
     "strict": false
   },
-  "include": ["src/test/**/*"],
+  "include": ["src/test/**/*", "src/ls/epoch-converter.ts"],
   "exclude": ["node_modules"]
 }

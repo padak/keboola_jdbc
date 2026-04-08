@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Monorepo with two subprojects:
-- **jdbc-driver/** -- Java JDBC driver (v2.1.3) connecting DBeaver/DataGrip to Keboola projects
-- **vscode-sqltools/** -- TypeScript VSCode SQLTools extension (v2.1.3)
+- **jdbc-driver/** -- Java JDBC driver (v2.1.4) connecting DBeaver/DataGrip to Keboola projects
+- **vscode-sqltools/** -- TypeScript VSCode SQLTools extension (v2.1.4)
 
 Two API layers used by both:
 - **Storage API** (`connection.keboola.com`) - connection setup: tokens, branches, workspaces. Also provides data for virtual `_keboola.*` tables.
@@ -22,7 +22,7 @@ JDBC mapping: Catalog = Database (from Snowflake), Schema = Schema (from Snowfla
 
 ```bash
 cd jdbc-driver
-mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.1.3.jar)
+mvn clean package          # Build uber-jar (target/keboola-jdbc-driver-2.1.4.jar)
 mvn test                   # Run all unit tests
 mvn test -pl . -Dtest=TypeMapperTest          # Run single test class
 mvn test -pl . -Dtest=TypeMapperTest#testVarchar  # Run single test method
@@ -32,7 +32,7 @@ mvn verify -Pkeboola-integration              # Run integration tests (needs KEB
 Manual integration test:
 ```bash
 cd jdbc-driver
-KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-2.1.3.jar com.keboola.jdbc.ManualConnectionTest
+KEBOOLA_TOKEN=xxx java -cp target/keboola-jdbc-driver-2.1.4.jar com.keboola.jdbc.ManualConnectionTest
 ```
 
 **After every version bump or code change, always run `make dist`** (from `jdbc-driver/`) to rebuild the uber-jar and copy it to `jdbc-driver/dist/`. The `dist/` directory contains the release-ready jars that users download. **Never delete old jars from `jdbc-driver/dist/`** -- keep all previous versions for version history.
@@ -76,7 +76,7 @@ cp sqltools-keboola-driver-*.vsix dist/
 3. `npm run package && cp sqltools-keboola-driver-*.vsix dist/`
 4. Commit, tag, release
 
-**Both projects share the same version number** (e.g. 2.1.3).
+**Both projects share the same version number** (e.g. 2.1.4).
 
 ## Architecture
 

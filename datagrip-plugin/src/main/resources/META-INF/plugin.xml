@@ -1,0 +1,26 @@
+<idea-plugin>
+    <id>com.keboola.datagrip</id>
+    <name>Keboola Database Support</name>
+    <version>1.0.0</version>
+    <vendor url="https://www.keboola.com">Keboola</vendor>
+
+    <description><![CDATA[
+        Adds Keboola as a recognized database type in DataGrip and IntelliJ IDEA.
+        Uses JDBC metadata introspection for database/schema/table enumeration,
+        supporting all Keboola Query Service backends (Snowflake, BigQuery, DuckDB)
+        through the Keboola JDBC driver.
+    ]]></description>
+
+    <depends>com.intellij.modules.database</depends>
+    <depends>com.intellij.database</depends>
+
+    <extensions defaultExtensionNs="com.intellij.database">
+        <!-- Register Keboola as a known DBMS type.
+             No introspector registered = DataGrip uses JDBC metadata fallback
+             (getCatalogs, getSchemas, getTables, getColumns from our driver). -->
+        <dbms id="KEBOOLA" instance="com.keboola.datagrip.KeboolaDbms.KEBOOLA"/>
+
+        <!-- Driver configuration with URL template and connection properties -->
+        <driversConfig config="databaseDrivers/keboola-drivers.xml"/>
+    </extensions>
+</idea-plugin>

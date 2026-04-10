@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<drivers>
+    <driver id="keboola" name="Keboola" driver-class="com.keboola.jdbc.KeboolaDriver" dialect="GenericSQL">
+        <url-template name="Default" template="jdbc:keboola://{host::connection.keboola.com}[?&lt;&amp;,token={password:param},branch={branch:param},workspace={workspace:param}&gt;]"/>
+        <option name="auto-sync" value="true"/>
+    </driver>
+</drivers>

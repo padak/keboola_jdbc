@@ -18,6 +18,7 @@ dependency-reduced-pom.xml
 # DataGrip plugin
 datagrip-plugin/build/
 datagrip-plugin/.gradle/
+datagrip-plugin/.intellijPlatform/
 datagrip-plugin/gradle/
 datagrip-plugin/gradlew
 datagrip-plugin/gradlew.bat

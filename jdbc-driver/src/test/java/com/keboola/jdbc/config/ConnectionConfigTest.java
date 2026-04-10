@@ -297,4 +297,36 @@ class ConnectionConfigTest {
         assertFalse(str.contains(VALID_TOKEN), "toString() must not expose the API token");
         assertTrue(str.contains("connection.keboola.com"), "toString() should include the host");
     }
+
+    // -------------------------------------------------------------------------
+    // password alias for token (DataGrip compatibility)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void password_acceptedAsTokenAlias() throws KeboolaJdbcException {
+        Properties props = new Properties();
+        props.setProperty("password", VALID_TOKEN);
+
+        ConnectionConfig config = ConnectionConfig.fromUrl(VALID_URL, props);
+        assertEquals(VALID_TOKEN, config.getToken());
+    }
+
+    @Test
+    void token_takesPrecedenceOverPassword() throws KeboolaJdbcException {
+        Properties props = new Properties();
+        props.setProperty("token", VALID_TOKEN);
+        props.setProperty("password", "other-token-value");
+
+        ConnectionConfig config = ConnectionConfig.fromUrl(VALID_URL, props);
+        assertEquals(VALID_TOKEN, config.getToken(), "token property should take precedence over password");
+    }
+
+    @Test
+    void neitherTokenNorPassword_throwsException() {
+        Properties props = new Properties();
+
+        KeboolaJdbcException ex = assertThrows(KeboolaJdbcException.class,
+                () -> ConnectionConfig.fromUrl(VALID_URL, props));
+        assertTrue(ex.getMessage().contains("password"), "Error should mention password alias");
+    }
 }

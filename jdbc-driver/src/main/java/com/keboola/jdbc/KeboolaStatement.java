@@ -1,6 +1,7 @@
 package com.keboola.jdbc;
 
 import com.keboola.jdbc.command.KeboolaCommandDispatcher;
+import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.model.JobStatus;
@@ -151,7 +152,7 @@ public class KeboolaStatement implements Statement {
                 return true;
             } else {
                 // For non-SELECT statements, fetch the result to get backendContext
-                QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStatus.getId(), 0, 1);
+                QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStatus.getId(), 0, DriverConfig.MIN_PAGE_SIZE);
                 updateSchemaFromBackendContext(result, statements);
                 Integer affected = lastStatus.getRowsAffected();
                 updateCount = affected != null ? affected : 0;

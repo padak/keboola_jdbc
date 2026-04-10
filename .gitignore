@@ -13,6 +13,14 @@ logs/
 target/
 jdbc-driver/target/
 jdbc-driver/dependency-reduced-pom.xml
+dependency-reduced-pom.xml
+
+# DataGrip plugin
+datagrip-plugin/build/
+datagrip-plugin/.gradle/
+datagrip-plugin/gradle/
+datagrip-plugin/gradlew
+datagrip-plugin/gradlew.bat
 
 # VSCode SQLTools extension
 vscode-sqltools/node_modules/

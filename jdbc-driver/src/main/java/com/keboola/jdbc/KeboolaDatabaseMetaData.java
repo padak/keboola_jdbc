@@ -146,6 +146,8 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                     rows.add(Arrays.asList(schemaName, dbName));
                 }
             }
+        } catch (SQLException e) {
+            LOG.debug("getSchemas SHOW command failed (ignored): {}", e.getMessage());
         }
 
         rows.sort(Comparator.<List<Object>, String>comparing(r -> (String) r.get(1))
@@ -201,64 +203,67 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         }
 
         // Real tables/views from Snowflake (skip if schema is exclusively _keboola)
+        // Note: SHOW OBJECTS is not supported by all Query Service backends,
+        // so we run SHOW TABLES and SHOW VIEWS separately.
         boolean schemaIsOnlyVirtual = VirtualTableMetadata.SCHEMA_NAME.equalsIgnoreCase(schemaPattern);
         if ((wantTables || wantViews) && !schemaIsOnlyVirtual) {
-            String showCommand;
-            if (wantTables && wantViews) {
-                showCommand = "SHOW OBJECTS";
-            } else if (wantViews) {
-                showCommand = "SHOW VIEWS";
-            } else {
-                showCommand = "SHOW TABLES";
-            }
-
-            StringBuilder sql = new StringBuilder(showCommand);
+            String likeClause = "";
             if (tableNamePattern != null && !tableNamePattern.isEmpty() && !tableNamePattern.equals("%")) {
-                sql.append(" LIKE '").append(escapeSingleQuoteForLike(tableNamePattern)).append("'");
+                likeClause = " LIKE '" + escapeSingleQuoteForLike(tableNamePattern) + "'";
             }
-            sql.append(buildScopeInClause(catalog, schemaPattern));
+            String scopeClause = buildScopeInClause(catalog, schemaPattern);
 
-            try (Statement stmt = connection.createStatement();
-                 ResultSet rs = stmt.executeQuery(sql.toString())) {
-                int nameIdx = findColumnIndex(rs, "name");
-                int schemaIdx = findColumnIndex(rs, "schema_name");
-                int dbIdx = findColumnIndex(rs, "database_name");
-                int kindIdx = findColumnIndex(rs, "kind");
-                while (rs.next()) {
-                    String schemaName = rs.getString(schemaIdx);
-                    String dbName = rs.getString(dbIdx);
-                    String kind = rs.getString(kindIdx);
-
-                    if (isFilteredDatabase(dbName)) continue;
-                    if (!matchesPattern(schemaName, schemaPattern)) continue;
-                    if (!matchesPattern(dbName, catalog)) continue;
-
-                    String tableType = "TABLE";
-                    if ("VIEW".equalsIgnoreCase(kind)) {
-                        tableType = "VIEW";
-                    }
-
-                    if (typeSet != null && !typeSet.contains(tableType) && !typeSet.contains("BASE TABLE")) {
-                        continue;
-                    }
-
-                    rows.add(Arrays.asList(
-                            dbName,
-                            schemaName,
-                            rs.getString(nameIdx),
-                            tableType,
-                            "",
-                            null, null, null, null, null
-                    ));
-                }
+            if (wantTables) {
+                String sql = "SHOW TABLES" + likeClause + scopeClause;
+                LOG.debug("getTables SQL: {}", sql);
+                fetchShowResults(sql, "TABLE", catalog, schemaPattern, typeSet, rows);
+            }
+            if (wantViews) {
+                String sql = "SHOW VIEWS" + likeClause + scopeClause;
+                LOG.debug("getTables SQL: {}", sql);
+                fetchShowResults(sql, "VIEW", catalog, schemaPattern, typeSet, rows);
             }
         }
 
+        LOG.debug("getTables returning {} rows", rows.size());
+        if (!rows.isEmpty()) {
+            LOG.debug("getTables first row: {}", rows.get(0));
+        }
         rows.sort(Comparator.<List<Object>, String>comparing(r -> (String) r.get(3))  // TABLE_TYPE
                 .thenComparing(r -> (String) r.get(0))   // TABLE_CAT
                 .thenComparing(r -> (String) r.get(1))   // TABLE_SCHEM
                 .thenComparing(r -> (String) r.get(2)));  // TABLE_NAME
         return new ArrayResultSet(columns, rows);
+    }
+
+    private void fetchShowResults(String sql, String defaultType, String catalogPattern,
+                                   String schemaPattern, Set<String> typeSet, List<List<Object>> rows) {
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            int nameIdx = findColumnIndex(rs, "name");
+            int schemaIdx = findColumnIndex(rs, "schema_name");
+            int dbIdx = findColumnIndex(rs, "database_name");
+            while (rs.next()) {
+                String schemaName = rs.getString(schemaIdx);
+                String dbName = rs.getString(dbIdx);
+
+                if (isFilteredDatabase(dbName)) continue;
+                if (!matchesPattern(schemaName, schemaPattern)) continue;
+                if (!matchesPattern(dbName, catalogPattern)) continue;
+
+                String tableType = defaultType;
+                if (typeSet != null && !typeSet.contains(tableType) && !typeSet.contains("BASE TABLE")) {
+                    continue;
+                }
+
+                rows.add(Arrays.asList(
+                        dbName, schemaName, rs.getString(nameIdx), tableType, "",
+                        null, null, null, null, null
+                ));
+            }
+        } catch (SQLException e) {
+            LOG.debug("getTables SHOW command failed (ignored): {}", e.getMessage());
+        }
     }
 
     @Override
@@ -395,6 +400,9 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                         null, null, null, null, "NO", "NO"
                 ));
             }
+        } catch (SQLException e) {
+            // Gracefully handle non-existent schemas/databases during introspection
+            LOG.debug("getColumns SHOW command failed (ignored): {}", e.getMessage());
         }
         } // end if !schemaIsOnlyVirtual
 
@@ -843,8 +851,15 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         if (sqlPattern == null || sqlPattern.equals("%")) return true;
         if (value == null) return false;
         if (sqlPattern.isEmpty()) return value.isEmpty();
-        String regex = sqlPattern
-                .replace("\\", "\\\\")
+
+        // Handle SQL LIKE escape sequences: \_ = literal underscore, \% = literal percent
+        // Use placeholders to preserve escaped chars through the regex conversion
+        String work = sqlPattern
+                .replace("\\_", "\u0001")   // placeholder for literal _
+                .replace("\\%", "\u0002");  // placeholder for literal %
+
+        // Escape regex special chars (but NOT \ which we already handled)
+        String regex = work
                 .replace(".", "\\.")
                 .replace("(", "\\(")
                 .replace(")", "\\)")
@@ -857,15 +872,39 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
                 .replace("|", "\\|")
                 .replace("+", "\\+")
                 .replace("*", "\\*")
-                .replace("?", "\\?")
+                .replace("?", "\\?");
+
+        // Convert SQL LIKE wildcards to regex
+        regex = regex
                 .replace("%", ".*")
                 .replace("_", ".");
+
+        // Restore escaped literals
+        regex = regex
+                .replace("\u0001", "_")
+                .replace("\u0002", "%");
+
         return value.matches("(?i)" + regex);
+    }
+
+    /**
+     * Strips LIKE escape characters from an identifier.
+     * JDBC metadata methods receive patterns where _ and % are wildcards;
+     * DataGrip escapes literal underscores as \_ . When we use identifiers in
+     * IN SCHEMA/DATABASE/TABLE clauses, we need the raw name.
+     */
+    private String unescapeLikePattern(String pattern) {
+        if (pattern == null) return null;
+        return pattern.replace("\\_", "_").replace("\\%", "%");
+    }
+
+    private String quoteIdentifier(String id) {
+        return "\"" + unescapeLikePattern(id).replace("\"", "\"\"") + "\"";
     }
 
     private String buildCatalogInClause(String catalog) {
         if (catalog != null && !catalog.equals("%")) {
-            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+            return " IN DATABASE " + quoteIdentifier(catalog);
         }
         return "";
     }
@@ -875,9 +914,9 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         boolean hasSchema = schema != null && !schema.isEmpty() && !schema.equals("%");
 
         if (hasCatalog && hasSchema) {
-            return " IN SCHEMA \"" + catalog.replace("\"", "\"\"") + "\".\"" + schema.replace("\"", "\"\"") + "\"";
+            return " IN SCHEMA " + quoteIdentifier(catalog) + "." + quoteIdentifier(schema);
         } else if (hasCatalog) {
-            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+            return " IN DATABASE " + quoteIdentifier(catalog);
         }
         return "";
     }
@@ -888,12 +927,12 @@ public class KeboolaDatabaseMetaData implements DatabaseMetaData {
         boolean hasTable = table != null && !table.isEmpty() && !table.equals("%");
 
         if (hasCatalog && hasSchema && hasTable) {
-            return " IN TABLE \"" + catalog.replace("\"", "\"\"") + "\".\"" +
-                    schema.replace("\"", "\"\"") + "\".\"" + table.replace("\"", "\"\"") + "\"";
+            return " IN TABLE " + quoteIdentifier(catalog) + "." +
+                    quoteIdentifier(schema) + "." + quoteIdentifier(table);
         } else if (hasCatalog && hasSchema) {
-            return " IN SCHEMA \"" + catalog.replace("\"", "\"\"") + "\".\"" + schema.replace("\"", "\"\"") + "\"";
+            return " IN SCHEMA " + quoteIdentifier(catalog) + "." + quoteIdentifier(schema);
         } else if (hasCatalog) {
-            return " IN DATABASE \"" + catalog.replace("\"", "\"\"") + "\"";
+            return " IN DATABASE " + quoteIdentifier(catalog);
         }
         return "";
     }

@@ -13,7 +13,7 @@ public final class DriverConfig {
     // --- Driver identity ---
 
     public static final String DRIVER_NAME    = "Keboola JDBC Driver";
-    public static final String DRIVER_VERSION = "2.1.4";
+    public static final String DRIVER_VERSION = "2.1.5";
     public static final int    MAJOR_VERSION  = 2;
     public static final int    MINOR_VERSION  = 1;
 
@@ -26,6 +26,9 @@ public final class DriverConfig {
 
     /** Default number of rows requested per page when fetching query results. Minimum allowed by API is 100. */
     public static final int DEFAULT_PAGE_SIZE = 1000;
+
+    /** Minimum page size accepted by the Query Service API. */
+    public static final int MIN_PAGE_SIZE = 100;
 
     // --- Polling / backoff ---
 

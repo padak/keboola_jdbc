@@ -81,14 +81,24 @@ public class KeboolaDriver implements Driver {
     public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) throws SQLException {
         Properties effectiveInfo = (info != null) ? info : new Properties();
         String token = effectiveInfo.getProperty("token", "");
+        if (token.isEmpty()) {
+            token = effectiveInfo.getProperty("password", "");
+        }
 
         List<DriverPropertyInfo> props = new ArrayList<>();
 
-        // --- token property ---
+        // --- token property (also accepted as 'password' for DataGrip masking) ---
         DriverPropertyInfo tokenProp = new DriverPropertyInfo("token", token);
         tokenProp.required = true;
         tokenProp.description = "Keboola Storage API Token";
         props.add(tokenProp);
+
+        // --- password property (alias for token - DataGrip masks properties named 'password') ---
+        String password = effectiveInfo.getProperty("password", "");
+        DriverPropertyInfo passwordProp = new DriverPropertyInfo("password", password);
+        passwordProp.required = false;
+        passwordProp.description = "Alias for 'token' — use this field so DataGrip masks the value";
+        props.add(passwordProp);
 
         // --- branch property ---
         String branchValue = effectiveInfo.getProperty("branch", "");

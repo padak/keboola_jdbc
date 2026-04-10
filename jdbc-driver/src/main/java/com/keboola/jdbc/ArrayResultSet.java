@@ -626,13 +626,31 @@ public class ArrayResultSet implements ResultSet {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public <T> T getObject(int columnIndex, Class<T> type) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getObject with class not supported");
+        Object val = getObject(columnIndex);
+        if (val == null) return null;
+        if (type == null) return (T) val;
+        if (type == String.class) return (T) getString(columnIndex);
+        if (type == Integer.class || type == int.class) return (T) Integer.valueOf(getInt(columnIndex));
+        if (type == Long.class || type == long.class) return (T) Long.valueOf(getLong(columnIndex));
+        if (type == Boolean.class || type == boolean.class) return (T) Boolean.valueOf(getBoolean(columnIndex));
+        if (type == Short.class || type == short.class) return (T) Short.valueOf(getShort(columnIndex));
+        if (type == Double.class || type == double.class) return (T) Double.valueOf(getDouble(columnIndex));
+        if (type == Float.class || type == float.class) return (T) Float.valueOf(getFloat(columnIndex));
+        if (type == BigDecimal.class) return (T) getBigDecimal(columnIndex);
+        if (type == byte[].class) return (T) getBytes(columnIndex);
+        if (type == Date.class) return (T) getDate(columnIndex);
+        if (type == Time.class) return (T) getTime(columnIndex);
+        if (type == Timestamp.class) return (T) getTimestamp(columnIndex);
+        // Fallback: return the raw object if it is assignable
+        if (type.isInstance(val)) return type.cast(val);
+        throw new SQLException("Cannot convert to " + type.getName());
     }
 
     @Override
     public <T> T getObject(String columnLabel, Class<T> type) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getObject with class not supported");
+        return getObject(findColumnIndex(columnLabel), type);
     }
 
     @Override

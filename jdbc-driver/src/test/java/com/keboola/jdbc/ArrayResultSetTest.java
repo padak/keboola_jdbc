@@ -322,4 +322,54 @@ class ArrayResultSetTest {
 
         assertEquals(3, rs.getMetaData().getColumnCount());
     }
+
+    // -------------------------------------------------------------------------
+    // getObject(int, Class) - typed access (DataGrip compatibility)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void getObjectWithClass_string() throws SQLException {
+        ArrayResultSet rs = buildSingleRowResultSet();
+        rs.next();
+        assertEquals("Alice", rs.getObject(2, String.class));
+    }
+
+    @Test
+    void getObjectWithClass_integer() throws SQLException {
+        ArrayResultSet rs = buildSingleRowResultSet();
+        rs.next();
+        assertEquals(1, rs.getObject(1, Integer.class));
+    }
+
+    @Test
+    void getObjectWithClass_boolean() throws SQLException {
+        ArrayResultSet rs = buildSingleRowResultSet();
+        rs.next();
+        assertEquals(true, rs.getObject(3, Boolean.class));
+    }
+
+    @Test
+    void getObjectWithClass_null() throws SQLException {
+        List<String> columns = Arrays.asList("val");
+        List<List<Object>> rows = Collections.singletonList(
+                Collections.singletonList(null)
+        );
+        ArrayResultSet rs = buildResultSet(columns, rows);
+        rs.next();
+        assertNull(rs.getObject(1, String.class));
+    }
+
+    @Test
+    void getObjectWithClass_byLabel() throws SQLException {
+        ArrayResultSet rs = buildSingleRowResultSet();
+        rs.next();
+        assertEquals("Alice", rs.getObject("name", String.class));
+    }
+
+    @Test
+    void getObjectWithClass_long() throws SQLException {
+        ArrayResultSet rs = buildMultiRowResultSet();
+        rs.next();
+        assertEquals(100L, rs.getObject(2, Long.class));
+    }
 }

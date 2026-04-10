@@ -74,8 +74,12 @@ public class ConnectionConfig {
 
         String token = effectiveProps.getProperty("token");
         if (token == null || token.trim().isEmpty()) {
+            // Accept 'password' as an alias for 'token' (DataGrip masks properties named 'password')
+            token = effectiveProps.getProperty("password");
+        }
+        if (token == null || token.trim().isEmpty()) {
             throw KeboolaJdbcException.authenticationFailed(
-                    "Property 'token' is required but was not provided"
+                    "Property 'token' (or 'password') is required but was not provided"
             );
         }
 

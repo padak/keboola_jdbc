@@ -422,4 +422,23 @@ class KeboolaConnectionTest {
         assertDoesNotThrow(() -> conn.applyQueryTag(info),
                 "tagging failure must never propagate");
     }
+
+    @Test
+    void applyQueryTagEscapesSingleQuoteInSqlLiteral() throws Exception {
+        TokenInfo info = new TokenInfo(
+                "it's", "desc", false,
+                new TokenInfo.Owner(1, "p"), "snowflake");
+
+        conn.applyQueryTag(info);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> stmtsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(queryClient).submitJob(anyLong(), anyLong(), stmtsCaptor.capture(), anyString());
+
+        String sql = stmtsCaptor.getValue().get(0);
+        assertTrue(sql.startsWith("ALTER SESSION SET QUERY_TAG='"),
+                "should start with ALTER SESSION SET QUERY_TAG=', was: " + sql);
+        assertTrue(sql.contains("it''s"),
+                "single quote in tag value must be doubled for the SQL literal, was: " + sql);
+    }
 }

@@ -211,8 +211,10 @@ public class KeboolaConnection implements Connection {
     void applyQueryTag(TokenInfo tokenInfo) {
         try {
             String tag = buildQueryTag(tokenInfo);
-            // Single-quote the JSON as a Snowflake string literal; double any embedded quote.
-            String sql = "ALTER SESSION SET QUERY_TAG='" + tag.replace("'", "''") + "'";
+            // Embed as a Snowflake single-quoted literal. Escape backslash first (Snowflake
+            // processes backslash escapes in string literals), then double single quotes.
+            String escaped = tag.replace("\\", "\\\\").replace("'", "''");
+            String sql = "ALTER SESSION SET QUERY_TAG='" + escaped + "'";
             LOG.debug("Setting session QUERY_TAG: {}", sql);
             queryClient.submitJob(branchId, workspaceId,
                     java.util.Collections.singletonList(sql), sessionId);

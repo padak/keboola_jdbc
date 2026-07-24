@@ -1,5 +1,7 @@
 package com.keboola.jdbc;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.JobStatus;
@@ -7,6 +9,7 @@ import com.keboola.jdbc.http.model.QueryJob;
 import com.keboola.jdbc.http.model.QueryResult;
 import com.keboola.jdbc.http.model.ResultColumn;
 import com.keboola.jdbc.http.model.StatementStatus;
+import com.keboola.jdbc.http.model.TokenInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -328,5 +331,58 @@ class KeboolaConnectionTest {
                 .submitJob(anyLong(), anyLong(),
                         org.mockito.ArgumentMatchers.<List<String>>any(), anyString());
         assertEquals("S2", conn.getSchema());
+    }
+
+    // ---------------------------------------------------------------------
+    // QUERY_TAG builder
+    // ---------------------------------------------------------------------
+
+    private static final ObjectMapper TAG_MAPPER = new ObjectMapper();
+
+    @Test
+    void buildQueryTagIncludesAppVersionTokenAndProject() throws Exception {
+        TokenInfo info = new TokenInfo(
+                "12345", "my token", false,
+                new TokenInfo.Owner(6789, "My Project"), "snowflake");
+
+        JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(info));
+
+        assertEquals("kbc-jdbc", tag.get("app").asText());
+        assertEquals("12345", tag.get("tokenId").asText());
+        assertEquals(6789, tag.get("projectId").asInt());
+        assertNotNull(tag.get("v"), "tag must carry driver version");
+    }
+
+    @Test
+    void buildQueryTagOmitsProjectWhenOwnerNull() throws Exception {
+        TokenInfo info = new TokenInfo("12345", "my token", false, null, "snowflake");
+
+        JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(info));
+
+        assertEquals("kbc-jdbc", tag.get("app").asText());
+        assertEquals("12345", tag.get("tokenId").asText());
+        assertFalse(tag.has("projectId"), "projectId must be omitted when owner is null");
+    }
+
+    @Test
+    void buildQueryTagHandlesNullTokenInfo() throws Exception {
+        JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(null));
+
+        assertEquals("kbc-jdbc", tag.get("app").asText());
+        assertNotNull(tag.get("v"));
+        assertFalse(tag.has("tokenId"));
+        assertFalse(tag.has("projectId"));
+    }
+
+    @Test
+    void buildQueryTagProducesValidJsonWhenTokenIdContainsQuote() throws Exception {
+        TokenInfo info = new TokenInfo(
+                "weird\"id", "desc", false,
+                new TokenInfo.Owner(1, "p"), "snowflake");
+
+        // Must parse back cleanly — proves Jackson escaping, not string concatenation.
+        JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(info));
+
+        assertEquals("weird\"id", tag.get("tokenId").asText());
     }
 }

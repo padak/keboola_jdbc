@@ -1,6 +1,8 @@
 package com.keboola.jdbc;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.keboola.jdbc.config.ConnectionConfig;
+import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.JobQueueClient;
 import com.keboola.jdbc.http.QueryServiceClient;
@@ -56,6 +58,9 @@ import java.util.concurrent.Executor;
 public class KeboolaConnection implements Connection {
 
     private static final Logger LOG = LoggerFactory.getLogger(KeboolaConnection.class);
+
+    /** Mapper used only to serialize the QUERY_TAG JSON. */
+    private static final ObjectMapper TAG_MAPPER = new ObjectMapper();
 
     private final String host;
     private final StorageApiClient storageClient;
@@ -159,6 +164,37 @@ public class KeboolaConnection implements Connection {
         TokenInfo info = storageClient.verifyToken();
         LOG.debug("Token verified: project='{}', tokenId={}", info.getOwner().getName(), info.getId());
         return info;
+    }
+
+    /**
+     * Builds the JSON payload for the session QUERY_TAG. Carries the driver app
+     * marker, version, and — when available — the token id and project id so
+     * driver queries are attributable in Snowflake QUERY_HISTORY.
+     *
+     * Never throws: on any serialization problem it returns a minimal, valid
+     * app+version tag so driver traffic stays identifiable.
+     *
+     * @param tokenInfo verified token metadata, or null if unavailable
+     * @return a JSON string suitable for embedding in ALTER SESSION SET QUERY_TAG
+     */
+    static String buildQueryTag(TokenInfo tokenInfo) {
+        java.util.Map<String, Object> tag = new java.util.LinkedHashMap<>();
+        tag.put("app", DriverConfig.QUERY_TAG_APP);
+        tag.put("v", DriverConfig.DRIVER_VERSION);
+        if (tokenInfo != null) {
+            if (tokenInfo.getId() != null) {
+                tag.put("tokenId", tokenInfo.getId());
+            }
+            if (tokenInfo.getOwner() != null) {
+                tag.put("projectId", tokenInfo.getOwner().getId());
+            }
+        }
+        try {
+            return TAG_MAPPER.writeValueAsString(tag);
+        } catch (Exception e) {
+            LOG.warn("Failed to serialize QUERY_TAG, using minimal tag: {}", e.getMessage());
+            return "{\"app\":\"" + DriverConfig.QUERY_TAG_APP + "\"}";
+        }
     }
 
     private String discoverQueryServiceUrl() throws KeboolaJdbcException {

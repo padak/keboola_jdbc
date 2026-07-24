@@ -646,4 +646,38 @@ class KeboolaDriverIT {
             assertTrue(rs.wasNull(), "wasNull() should return true after reading NULL");
         }
     }
+
+    // =========================================================================
+    // QUERY_TAG verification (E2E)
+    // =========================================================================
+
+    @Test
+    @Order(100)
+    void testQueryTagIsSetAndPersistsAcrossQueries() throws Exception {
+        String firstTag;
+
+        // SHOW PARAMETERS columns: 1=key, 2=value, 3=default, 4=level, ...
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW PARAMETERS LIKE 'QUERY_TAG'")) {
+            assertTrue(rs.next(), "SHOW PARAMETERS should return a row for QUERY_TAG");
+            firstTag = rs.getString(2);
+            assertNotNull(firstTag, "QUERY_TAG value should not be null");
+            assertTrue(firstTag.contains("kbc-jdbc"),
+                    "QUERY_TAG should contain the driver app marker, was: " + firstTag);
+        }
+
+        // Run an unrelated query in the same session.
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT 1")) {
+            assertTrue(rs.next());
+        }
+
+        // The tag must be unchanged — proves the Query Service does not reset it per job.
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery("SHOW PARAMETERS LIKE 'QUERY_TAG'")) {
+            assertTrue(rs.next());
+            assertEquals(firstTag, rs.getString(2),
+                    "QUERY_TAG should persist unchanged across queries in the same session");
+        }
+    }
 }

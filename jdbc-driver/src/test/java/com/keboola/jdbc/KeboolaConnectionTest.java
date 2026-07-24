@@ -2,6 +2,7 @@ package com.keboola.jdbc;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.JobStatus;
@@ -26,6 +27,7 @@ import java.sql.Statement;
 import java.util.Collections;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -37,6 +39,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -384,5 +387,39 @@ class KeboolaConnectionTest {
         JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(info));
 
         assertEquals("weird\"id", tag.get("tokenId").asText());
+    }
+
+    // -------------------------------------------------------------------------
+    // applyQueryTag()
+    // -------------------------------------------------------------------------
+
+    @Test
+    void applyQueryTagSubmitsAlterSessionStatement() throws Exception {
+        TokenInfo info = new TokenInfo(
+                "12345", "my token", false,
+                new TokenInfo.Owner(6789, "My Project"), "snowflake");
+
+        conn.applyQueryTag(info);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> stmtsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(queryClient).submitJob(anyLong(), anyLong(), stmtsCaptor.capture(), anyString());
+
+        List<String> stmts = stmtsCaptor.getValue();
+        assertEquals(1, stmts.size());
+        assertTrue(stmts.get(0).startsWith("ALTER SESSION SET QUERY_TAG="),
+                "should issue ALTER SESSION SET QUERY_TAG, was: " + stmts.get(0));
+        assertTrue(stmts.get(0).contains("kbc-jdbc"),
+                "tag should contain the app marker, was: " + stmts.get(0));
+    }
+
+    @Test
+    void applyQueryTagSwallowsExceptions() throws Exception {
+        TokenInfo info = new TokenInfo("12345", "t", false, null, "snowflake");
+        when(queryClient.submitJob(anyLong(), anyLong(), any(), anyString()))
+                .thenThrow(new KeboolaJdbcException("boom"));
+
+        assertDoesNotThrow(() -> conn.applyQueryTag(info),
+                "tagging failure must never propagate");
     }
 }

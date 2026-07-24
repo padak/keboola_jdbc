@@ -108,6 +108,10 @@ public class KeboolaConnection implements Connection {
             // temp tables etc. persist across execute() calls
             this.sessionId = UUID.randomUUID().toString();
 
+            // Tag the session so driver queries are attributable in Snowflake
+            // QUERY_HISTORY. Telemetry only — never fails the connection.
+            applyQueryTag(tokenInfo);
+
             // Apply default schema from connection config by sending USE SCHEMA
             // to the server session, so it persists across all subsequent queries
             if (config.getSchema() != null) {
@@ -194,6 +198,26 @@ public class KeboolaConnection implements Connection {
         } catch (Exception e) {
             LOG.warn("Failed to serialize QUERY_TAG, using minimal tag: {}", e.getMessage());
             return "{\"app\":\"" + DriverConfig.QUERY_TAG_APP + "\"}";
+        }
+    }
+
+    /**
+     * Sets the session QUERY_TAG so all queries on this connection are attributable
+     * in Snowflake QUERY_HISTORY. Telemetry only — a failure here is logged and
+     * ignored so it never breaks the connection.
+     *
+     * @param tokenInfo verified token metadata, or null if unavailable
+     */
+    void applyQueryTag(TokenInfo tokenInfo) {
+        try {
+            String tag = buildQueryTag(tokenInfo);
+            // Single-quote the JSON as a Snowflake string literal; double any embedded quote.
+            String sql = "ALTER SESSION SET QUERY_TAG='" + tag.replace("'", "''") + "'";
+            LOG.debug("Setting session QUERY_TAG: {}", sql);
+            queryClient.submitJob(branchId, workspaceId,
+                    java.util.Collections.singletonList(sql), sessionId);
+        } catch (Exception e) {
+            LOG.warn("Failed to set session QUERY_TAG (usage tagging skipped): {}", e.getMessage());
         }
     }
 

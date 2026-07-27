@@ -75,6 +75,13 @@
         "title": "Keboola: Cancel Running Query",
         "category": "SQLTools"
       }
+    ],
+    "sqltools/connections": [
+      {
+        "name": "Keboola",
+        "alias": "Keboola",
+        "driver": "Keboola"
+      }
     ]
   },
   "repository": {

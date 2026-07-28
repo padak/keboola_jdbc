@@ -667,13 +667,13 @@ class KeboolaDriverIT {
             firstTag = rs.getString(2);
             assertNotNull(firstTag, "QUERY_TAG value should not be null");
 
-            // Assert the actual attribution payload is present — not merely the app marker.
+            // Assert the actual attribution payload is present — not merely the service marker.
             // A tag missing tokenId/projectId is a silent loss of exactly the data this feature exists for.
             JsonNode tag = new ObjectMapper().readTree(firstTag);
-            assertEquals("kbc-jdbc", tag.path("app").asText(),
-                    "QUERY_TAG app marker missing, was: " + firstTag);
-            assertFalse(tag.path("v").asText().isEmpty(),
-                    "QUERY_TAG must carry the driver version, was: " + firstTag);
+            assertEquals("jdbc-driver", tag.path("keboola_service").asText(),
+                    "QUERY_TAG keboola_service marker missing, was: " + firstTag);
+            assertEquals("jdbc-driver", tag.path("service").asText(),
+                    "QUERY_TAG service marker missing, was: " + firstTag);
             assertTrue(tag.hasNonNull("tokenId") && !tag.get("tokenId").asText().isEmpty(),
                     "QUERY_TAG must carry a tokenId for attribution, was: " + firstTag);
             assertTrue(tag.hasNonNull("projectId"),

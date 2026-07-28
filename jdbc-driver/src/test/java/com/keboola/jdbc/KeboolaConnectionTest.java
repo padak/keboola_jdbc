@@ -343,17 +343,17 @@ class KeboolaConnectionTest {
     private static final ObjectMapper TAG_MAPPER = new ObjectMapper();
 
     @Test
-    void buildQueryTagIncludesAppVersionTokenAndProject() throws Exception {
+    void buildQueryTagFollowsConventionWithTokenAndProject() throws Exception {
         TokenInfo info = new TokenInfo(
                 "12345", "my token", false,
                 new TokenInfo.Owner(6789, "My Project"), "snowflake");
 
         JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(info));
 
-        assertEquals("kbc-jdbc", tag.get("app").asText());
+        assertEquals("jdbc-driver", tag.get("service").asText());
+        assertEquals("jdbc-driver", tag.get("keboola_service").asText());
         assertEquals("12345", tag.get("tokenId").asText());
         assertEquals(6789, tag.get("projectId").asInt());
-        assertNotNull(tag.get("v"), "tag must carry driver version");
     }
 
     @Test
@@ -362,7 +362,7 @@ class KeboolaConnectionTest {
 
         JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(info));
 
-        assertEquals("kbc-jdbc", tag.get("app").asText());
+        assertEquals("jdbc-driver", tag.get("keboola_service").asText());
         assertEquals("12345", tag.get("tokenId").asText());
         assertFalse(tag.has("projectId"), "projectId must be omitted when owner is null");
     }
@@ -371,8 +371,8 @@ class KeboolaConnectionTest {
     void buildQueryTagHandlesNullTokenInfo() throws Exception {
         JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(null));
 
-        assertEquals("kbc-jdbc", tag.get("app").asText());
-        assertNotNull(tag.get("v"));
+        assertEquals("jdbc-driver", tag.get("service").asText());
+        assertEquals("jdbc-driver", tag.get("keboola_service").asText());
         assertFalse(tag.has("tokenId"));
         assertFalse(tag.has("projectId"));
     }
@@ -404,7 +404,7 @@ class KeboolaConnectionTest {
         assertTrue(sql.startsWith("ALTER SESSION SET QUERY_TAG='"),
                 "should start with ALTER SESSION SET QUERY_TAG=', was: " + sql);
         assertTrue(sql.endsWith("'"), "should end with the closing quote, was: " + sql);
-        assertTrue(sql.contains("kbc-jdbc"), "tag should contain the app marker, was: " + sql);
+        assertTrue(sql.contains("jdbc-driver"), "tag should contain the service marker, was: " + sql);
     }
 
     @Test

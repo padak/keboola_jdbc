@@ -390,55 +390,65 @@ class KeboolaConnectionTest {
     }
 
     // -------------------------------------------------------------------------
-    // applyQueryTag()
+    // buildQueryTagStatement()
     // -------------------------------------------------------------------------
 
     @Test
-    void applyQueryTagSubmitsAlterSessionStatement() throws Exception {
+    void buildQueryTagStatementWrapsTagInAlterSession() {
         TokenInfo info = new TokenInfo(
                 "12345", "my token", false,
                 new TokenInfo.Owner(6789, "My Project"), "snowflake");
 
-        conn.applyQueryTag(info);
+        String sql = KeboolaConnection.buildQueryTagStatement(info);
+
+        assertTrue(sql.startsWith("ALTER SESSION SET QUERY_TAG='"),
+                "should start with ALTER SESSION SET QUERY_TAG=', was: " + sql);
+        assertTrue(sql.endsWith("'"), "should end with the closing quote, was: " + sql);
+        assertTrue(sql.contains("kbc-jdbc"), "tag should contain the app marker, was: " + sql);
+    }
+
+    @Test
+    void buildQueryTagStatementEscapesSingleQuoteForSqlLiteral() {
+        TokenInfo info = new TokenInfo(
+                "it's", "desc", false,
+                new TokenInfo.Owner(1, "p"), "snowflake");
+
+        String sql = KeboolaConnection.buildQueryTagStatement(info);
+
+        assertTrue(sql.contains("it''s"),
+                "single quote in tag value must be doubled for the SQL literal, was: " + sql);
+    }
+
+    // -------------------------------------------------------------------------
+    // initCatalogAndSchema() — QUERY_TAG is folded into the init job
+    // -------------------------------------------------------------------------
+
+    @Test
+    void initCatalogAndSchemaPrependsQueryTagAsFirstStatement() throws Exception {
+        conn.initCatalogAndSchema();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<String>> stmtsCaptor = ArgumentCaptor.forClass(List.class);
         verify(queryClient).submitJob(anyLong(), anyLong(), stmtsCaptor.capture(), anyString());
 
         List<String> stmts = stmtsCaptor.getValue();
-        assertEquals(1, stmts.size());
+        assertTrue(stmts.size() >= 2,
+                "init job should carry the tag plus discovery statement(s), was: " + stmts);
         assertTrue(stmts.get(0).startsWith("ALTER SESSION SET QUERY_TAG="),
-                "should issue ALTER SESSION SET QUERY_TAG, was: " + stmts.get(0));
-        assertTrue(stmts.get(0).contains("kbc-jdbc"),
-                "tag should contain the app marker, was: " + stmts.get(0));
+                "QUERY_TAG must be the first statement so it is set before any query, was: " + stmts.get(0));
+        assertTrue(stmts.get(stmts.size() - 1).contains("CURRENT_DATABASE()"),
+                "the discovery SELECT must remain the last statement, was: " + stmts.get(stmts.size() - 1));
     }
 
     @Test
-    void applyQueryTagSwallowsExceptions() throws Exception {
-        TokenInfo info = new TokenInfo("12345", "t", false, null, "snowflake");
+    void initCatalogAndSchemaIsNonFatalWhenInitJobFails() throws Exception {
+        // The whole safety argument for shipping tagging: a failing init job (which now
+        // carries the tag) must never break the connection.
         when(queryClient.submitJob(anyLong(), anyLong(), any(), anyString()))
                 .thenThrow(new KeboolaJdbcException("boom"));
 
-        assertDoesNotThrow(() -> conn.applyQueryTag(info),
-                "tagging failure must never propagate");
-    }
-
-    @Test
-    void applyQueryTagEscapesSingleQuoteInSqlLiteral() throws Exception {
-        TokenInfo info = new TokenInfo(
-                "it's", "desc", false,
-                new TokenInfo.Owner(1, "p"), "snowflake");
-
-        conn.applyQueryTag(info);
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<String>> stmtsCaptor = ArgumentCaptor.forClass(List.class);
-        verify(queryClient).submitJob(anyLong(), anyLong(), stmtsCaptor.capture(), anyString());
-
-        String sql = stmtsCaptor.getValue().get(0);
-        assertTrue(sql.startsWith("ALTER SESSION SET QUERY_TAG='"),
-                "should start with ALTER SESSION SET QUERY_TAG=', was: " + sql);
-        assertTrue(sql.contains("it''s"),
-                "single quote in tag value must be doubled for the SQL literal, was: " + sql);
+        assertDoesNotThrow(() -> conn.initCatalogAndSchema(),
+                "init/tagging failure must never propagate");
+        assertFalse(conn.isClosed(), "connection must remain usable after a failed init job");
     }
 }

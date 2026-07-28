@@ -108,10 +108,6 @@ public class KeboolaConnection implements Connection {
             // temp tables etc. persist across execute() calls
             this.sessionId = UUID.randomUUID().toString();
 
-            // Tag the session so driver queries are attributable in Snowflake
-            // QUERY_HISTORY. Telemetry only — never fails the connection.
-            applyQueryTag(tokenInfo);
-
             // Apply default schema from connection config by sending USE SCHEMA
             // to the server session, so it persists across all subsequent queries
             if (config.getSchema() != null) {
@@ -175,8 +171,8 @@ public class KeboolaConnection implements Connection {
      * marker, version, and — when available — the token id and project id so
      * driver queries are attributable in Snowflake QUERY_HISTORY.
      *
-     * Never throws: on any serialization problem it returns a minimal, valid
-     * app+version tag so driver traffic stays identifiable.
+     * The tag always carries {@code app} and {@code v}; {@code tokenId} and
+     * {@code projectId} are included when available.
      *
      * @param tokenInfo verified token metadata, or null if unavailable
      * @return a JSON string suitable for embedding in ALTER SESSION SET QUERY_TAG
@@ -195,31 +191,46 @@ public class KeboolaConnection implements Connection {
         }
         try {
             return TAG_MAPPER.writeValueAsString(tag);
-        } catch (Exception e) {
-            LOG.warn("Failed to serialize QUERY_TAG, using minimal tag: {}", e.getMessage());
-            return "{\"app\":\"" + DriverConfig.QUERY_TAG_APP + "\"}";
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // Unreachable: the map holds only String/Integer values. Fail loud if that
+            // ever changes rather than silently emitting a version-less hand-built tag.
+            throw new IllegalStateException("Failed to serialize QUERY_TAG", e);
         }
     }
 
     /**
-     * Sets the session QUERY_TAG so all queries on this connection are attributable
-     * in Snowflake QUERY_HISTORY. Telemetry only — a failure here is logged and
-     * ignored so it never breaks the connection.
+     * Builds the {@code ALTER SESSION SET QUERY_TAG='...'} statement. This is prepended
+     * to the connection-init job (see {@link #initCatalogAndSchema()}) so the tag is set
+     * — in order, in the same session, and with its status observed — before any user
+     * query runs, without an extra round trip.
      *
      * @param tokenInfo verified token metadata, or null if unavailable
+     * @return the ALTER SESSION statement
      */
-    void applyQueryTag(TokenInfo tokenInfo) {
-        try {
-            String tag = buildQueryTag(tokenInfo);
-            // Embed as a Snowflake single-quoted literal. Escape backslash first (Snowflake
-            // processes backslash escapes in string literals), then double single quotes.
-            String escaped = tag.replace("\\", "\\\\").replace("'", "''");
-            String sql = "ALTER SESSION SET QUERY_TAG='" + escaped + "'";
-            LOG.debug("Setting session QUERY_TAG: {}", sql);
-            queryClient.submitJob(branchId, workspaceId,
-                    java.util.Collections.singletonList(sql), sessionId);
-        } catch (Exception e) {
-            LOG.warn("Failed to set session QUERY_TAG (usage tagging skipped): {}", e.getMessage());
+    static String buildQueryTagStatement(TokenInfo tokenInfo) {
+        String tag = buildQueryTag(tokenInfo);
+        // Embed as a Snowflake single-quoted literal. Escape backslash first (Snowflake
+        // processes backslash escapes in string literals), then double single quotes.
+        String escaped = tag.replace("\\", "\\\\").replace("'", "''");
+        return "ALTER SESSION SET QUERY_TAG='" + escaped + "'";
+    }
+
+    /**
+     * Logs a warning (never throws) if the QUERY_TAG statement — always the first
+     * statement of the init job — did not complete successfully. A silently failed
+     * tag would leave driver queries unattributable in QUERY_HISTORY, so it is worth
+     * surfacing even though it must not break the connection.
+     */
+    private static void warnIfQueryTagFailed(JobStatus jobStatus) {
+        java.util.List<StatementStatus> stmts = jobStatus.getStatements();
+        if (stmts == null || stmts.isEmpty()) {
+            return;
+        }
+        StatementStatus tagStmt = stmts.get(0);
+        if (!tagStmt.isSuccessful()) {
+            LOG.warn("Session QUERY_TAG statement did not succeed (status={}, error={}); "
+                            + "driver queries may be unattributable in QUERY_HISTORY",
+                    tagStmt.getStatus(), tagStmt.getError());
         }
     }
 
@@ -250,8 +261,21 @@ public class KeboolaConnection implements Connection {
      * Queries the server for CURRENT_DATABASE() and CURRENT_SCHEMA() to initialize
      * the catalog and schema fields. If a schema was specified via connection config,
      * executes USE SCHEMA first.
+     *
+     * <p>The session QUERY_TAG statement is prepended as the first statement of this
+     * same job. Folding it in here (rather than a separate fire-and-forget submit)
+     * guarantees the tag is applied — in order, within the session — before any user
+     * query, lets us observe its status via {@link #warnIfQueryTagFailed(JobStatus)},
+     * and avoids an extra round trip per connect (which matters for tools like DBeaver
+     * that open many short-lived connections). Trade-off: if the Query Service fails
+     * the whole job when one statement fails, a bad tag would also skip catalog/schema
+     * discovery — acceptable because this method is non-fatal (everything is swallowed
+     * below) and the tag statement is simple and validated by the E2E pass-through test.
+     *
+     * <p>Non-fatal by contract: any failure is logged and swallowed so the connection
+     * still comes up.
      */
-    private void initCatalogAndSchema() throws SQLException {
+    void initCatalogAndSchema() throws SQLException {
         try {
             String initSql;
             if (currentSchema != null && !currentSchema.isEmpty()) {
@@ -261,9 +285,14 @@ public class KeboolaConnection implements Connection {
                 initSql = "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()";
             }
 
-            List<String> stmts = KeboolaStatement.splitStatements(initSql);
+            List<String> stmts = new java.util.ArrayList<>();
+            stmts.add(buildQueryTagStatement(tokenInfo));
+            stmts.addAll(KeboolaStatement.splitStatements(initSql));
+
             QueryJob job = queryClient.submitJob(branchId, workspaceId, stmts, sessionId);
             JobStatus jobStatus = queryClient.waitForCompletion(job.getQueryJobId());
+
+            warnIfQueryTagFailed(jobStatus);
 
             StatementStatus lastStmt = jobStatus.getStatements().get(jobStatus.getStatements().size() - 1);
             QueryResult result = queryClient.fetchResults(job.getQueryJobId(), lastStmt.getId(), 0, 100);

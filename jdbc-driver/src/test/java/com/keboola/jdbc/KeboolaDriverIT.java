@@ -1,5 +1,7 @@
 package com.keboola.jdbc;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -653,17 +655,29 @@ class KeboolaDriverIT {
 
     @Test
     @Order(100)
-    void testQueryTagIsSetAndPersistsAcrossQueries() throws Exception {
+    void queryTag_isSetWithAttributionAndPersists() throws Exception {
         String firstTag;
 
         // SHOW PARAMETERS columns: 1=key, 2=value, 3=default, 4=level, ...
+        // IN SESSION pins the scope to the session-level row (SHOW PARAMETERS defaults
+        // to SESSION, but stating it documents intent and avoids any account/user row).
         try (Statement stmt = connection.createStatement();
-             ResultSet rs = stmt.executeQuery("SHOW PARAMETERS LIKE 'QUERY_TAG'")) {
+             ResultSet rs = stmt.executeQuery("SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION")) {
             assertTrue(rs.next(), "SHOW PARAMETERS should return a row for QUERY_TAG");
             firstTag = rs.getString(2);
             assertNotNull(firstTag, "QUERY_TAG value should not be null");
-            assertTrue(firstTag.contains("kbc-jdbc"),
-                    "QUERY_TAG should contain the driver app marker, was: " + firstTag);
+
+            // Assert the actual attribution payload is present — not merely the app marker.
+            // A tag missing tokenId/projectId is a silent loss of exactly the data this feature exists for.
+            JsonNode tag = new ObjectMapper().readTree(firstTag);
+            assertEquals("kbc-jdbc", tag.path("app").asText(),
+                    "QUERY_TAG app marker missing, was: " + firstTag);
+            assertFalse(tag.path("v").asText().isEmpty(),
+                    "QUERY_TAG must carry the driver version, was: " + firstTag);
+            assertTrue(tag.hasNonNull("tokenId") && !tag.get("tokenId").asText().isEmpty(),
+                    "QUERY_TAG must carry a tokenId for attribution, was: " + firstTag);
+            assertTrue(tag.hasNonNull("projectId"),
+                    "QUERY_TAG must carry a projectId for attribution, was: " + firstTag);
         }
 
         // Run an unrelated query in the same session.
@@ -674,7 +688,7 @@ class KeboolaDriverIT {
 
         // The tag must be unchanged — proves the Query Service does not reset it per job.
         try (Statement stmt = connection.createStatement();
-             ResultSet rs = stmt.executeQuery("SHOW PARAMETERS LIKE 'QUERY_TAG'")) {
+             ResultSet rs = stmt.executeQuery("SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION")) {
             assertTrue(rs.next());
             assertEquals(firstTag, rs.getString(2),
                     "QUERY_TAG should persist unchanged across queries in the same session");

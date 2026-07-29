@@ -171,18 +171,18 @@ public class KeboolaConnection implements Connection {
      * QUERY_TAG convention so driver queries are attributable and bucketed by
      * Keboola telemetry in Snowflake QUERY_HISTORY.
      *
-     * The tag always carries {@code service} and {@code keboola_service} (both the
-     * driver's service name); {@code tokenId} and {@code projectId} are included
-     * when available for per-token / per-project attribution.
+     * The tag always carries {@code keboola_service} (the driver's service name);
+     * {@code tokenId} and {@code projectId} are included when available for
+     * per-token / per-project attribution.
      *
      * @param tokenInfo verified token metadata, or null if unavailable
      * @return a JSON string suitable for embedding in ALTER SESSION SET QUERY_TAG
      */
     static String buildQueryTag(TokenInfo tokenInfo) {
         java.util.Map<String, Object> tag = new java.util.LinkedHashMap<>();
-        // Follow the platform QUERY_TAG convention (see Query Service): "service" +
-        // "keboola_service" identify the originating service; telemetry buckets on these.
-        tag.put("service", DriverConfig.QUERY_TAG_SERVICE);
+        // Follow the platform QUERY_TAG convention: "keboola_service" identifies the
+        // originating service and is what telemetry buckets on. (The Query Service also
+        // emits a legacy "service" key, but keboola_service is the canonical one.)
         tag.put("keboola_service", DriverConfig.QUERY_TAG_SERVICE);
         if (tokenInfo != null) {
             if (tokenInfo.getId() != null) {

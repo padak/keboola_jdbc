@@ -350,8 +350,8 @@ class KeboolaConnectionTest {
 
         JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(info));
 
-        assertEquals("jdbc-driver", tag.get("service").asText());
         assertEquals("jdbc-driver", tag.get("keboola_service").asText());
+        assertFalse(tag.has("service"), "legacy 'service' key must not be emitted");
         assertEquals("12345", tag.get("tokenId").asText());
         assertEquals(6789, tag.get("projectId").asInt());
     }
@@ -371,7 +371,6 @@ class KeboolaConnectionTest {
     void buildQueryTagHandlesNullTokenInfo() throws Exception {
         JsonNode tag = TAG_MAPPER.readTree(KeboolaConnection.buildQueryTag(null));
 
-        assertEquals("jdbc-driver", tag.get("service").asText());
         assertEquals("jdbc-driver", tag.get("keboola_service").asText());
         assertFalse(tag.has("tokenId"));
         assertFalse(tag.has("projectId"));

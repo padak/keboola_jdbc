@@ -672,8 +672,6 @@ class KeboolaDriverIT {
             JsonNode tag = new ObjectMapper().readTree(firstTag);
             assertEquals("jdbc-driver", tag.path("keboola_service").asText(),
                     "QUERY_TAG keboola_service marker missing, was: " + firstTag);
-            assertEquals("jdbc-driver", tag.path("service").asText(),
-                    "QUERY_TAG service marker missing, was: " + firstTag);
             assertTrue(tag.hasNonNull("tokenId") && !tag.get("tokenId").asText().isEmpty(),
                     "QUERY_TAG must carry a tokenId for attribution, was: " + firstTag);
             assertTrue(tag.hasNonNull("projectId"),

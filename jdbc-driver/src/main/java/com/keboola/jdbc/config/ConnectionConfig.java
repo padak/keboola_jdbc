@@ -1,5 +1,7 @@
 package com.keboola.jdbc.config;
 
+import com.keboola.jdbc.auth.AuthMode;
+import com.keboola.jdbc.auth.PatAuthProvider;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 
 import org.slf4j.Logger;
@@ -9,7 +11,10 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Parsed connection parameters derived from a JDBC URL and connection properties.
@@ -19,16 +24,25 @@ import java.util.regex.Pattern;
  *
  * Supported properties (may be supplied via Properties or as URL query parameters;
  * Properties take precedence when both are present):
- *   token     (required) - Keboola Storage API token. May also be supplied via the
- *                          standard {@code password} property — useful for clients such
- *                          as Tableau whose generic JDBC connector has no UI for custom
- *                          properties but does pass the dialog "Password" field to the
+ *   token     (required) - Keboola Storage API token or Personal Access Token. May also be
+ *                          supplied via the standard {@code password} property — useful for
+ *                          clients such as Tableau whose generic JDBC connector has no UI for
+ *                          custom properties but does pass the dialog "Password" field to the
  *                          driver as {@code password}. This keeps the secret out of the
  *                          JDBC URL (which Tableau stores as plaintext in published data
  *                          sources). An explicit {@code token} wins over {@code password}.
+ *   auth      (optional) - authentication mode, {@code token} or {@code pat}. When absent it
+ *                          is inferred from the credential prefix.
+ *   project   (optional) - numeric project ID the connection operates on. Only meaningful for
+ *                          {@code auth=pat}, where a Personal Access Token spans several
+ *                          projects; absent means the caller discovers it. Ignored for a
+ *                          Storage API token, which already carries its project.
  *   branch    (optional) - branch ID to execute queries against
  *   workspace (optional) - workspace ID to use for query execution
  *   schema    (optional) - default schema (bucket) to use for unqualified table references
+ *
+ * The ID-valued properties ({@code project}, {@code branch}, {@code workspace}) accept either a
+ * bare number or the {@code "<id> (<name>)"} form the driver advertises as a dropdown choice.
  */
 public class ConnectionConfig {
 
@@ -42,19 +56,48 @@ public class ConnectionConfig {
             "^([a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,}$"
     );
 
+    /**
+     * Matches an ID-valued property: a bare number, or the {@code "<id> (<name>)"} form that
+     * {@code KeboolaDriver.getPropertyInfo} offers as a dropdown choice. IDE clients such as
+     * DBeaver and DataGrip may store the selected choice string verbatim, so the driver has to
+     * read back what it offered. The trailing label is greedy and may itself contain parentheses.
+     *
+     * <p>A leading minus is accepted so that a negative value reaches the range check of the
+     * property that cares about it, rather than being reported as a malformed number.
+     */
+    private static final Pattern ID_WITH_OPTIONAL_LABEL = Pattern.compile(
+            "^(-?\\d+)(\\s*\\(.*\\))?$"
+    );
+
     private static final Set<String> KNOWN_KEYS = new HashSet<>(Arrays.asList(
-            "token", "password", "branch", "workspace", "schema"
+            DriverConfig.PROP_TOKEN,
+            DriverConfig.PROP_PASSWORD,
+            DriverConfig.PROP_AUTH,
+            DriverConfig.PROP_PROJECT,
+            DriverConfig.PROP_BRANCH,
+            DriverConfig.PROP_WORKSPACE,
+            DriverConfig.PROP_SCHEMA
     ));
 
-    private final String host;
-    private final String token;
-    private final Long   branchId;
-    private final Long   workspaceId;
-    private final String schema;
+    /** Comma-separated list of the values the {@code auth} property accepts, for error messages. */
+    private static final String ACCEPTED_AUTH_VALUES = Stream.of(AuthMode.values())
+            .map(AuthMode::propertyValue)
+            .collect(Collectors.joining(", "));
 
-    private ConnectionConfig(String host, String token, Long branchId, Long workspaceId, String schema) {
+    private final String   host;
+    private final String   token;
+    private final AuthMode authMode;
+    private final Long     projectId;
+    private final Long     branchId;
+    private final Long     workspaceId;
+    private final String   schema;
+
+    private ConnectionConfig(String host, String token, AuthMode authMode, Long projectId,
+                             Long branchId, Long workspaceId, String schema) {
         this.host        = host;
         this.token       = token;
+        this.authMode    = authMode;
+        this.projectId   = projectId;
         this.branchId    = branchId;
         this.workspaceId = workspaceId;
         this.schema      = schema;
@@ -66,7 +109,8 @@ public class ConnectionConfig {
      * @param url   JDBC URL, e.g. "jdbc:keboola://connection.keboola.com"
      * @param props connection properties containing at minimum "token"
      * @return a fully validated {@link ConnectionConfig} instance
-     * @throws KeboolaJdbcException if the URL is malformed, the host is empty, or the token is missing
+     * @throws KeboolaJdbcException if the URL is malformed, the host is empty, the token is
+     *                              missing, or "auth"/"project" carry an unusable value
      */
     public static ConnectionConfig fromUrl(String url, Properties props) throws KeboolaJdbcException {
         if (url == null || !url.startsWith(DriverConfig.URL_PREFIX)) {
@@ -106,26 +150,76 @@ public class ConnectionConfig {
             }
         }
 
-        // The token may be supplied as 'token' or, as a fallback, via the standard
-        // 'password' property. The fallback lets Tableau users keep the token out of the
+        // The credential may be supplied as 'token' or, as a fallback, via the standard
+        // 'password' property. The fallback lets Tableau users keep the secret out of the
         // JDBC URL by typing it into the connection dialog's Password field. An explicit
         // 'token' always wins over 'password'.
         String token = firstNonBlank(
-                effectiveProps.getProperty("token"),
-                effectiveProps.getProperty("password")
+                effectiveProps.getProperty(DriverConfig.PROP_TOKEN),
+                effectiveProps.getProperty(DriverConfig.PROP_PASSWORD)
         );
         if (token == null) {
             throw KeboolaJdbcException.authenticationFailed(
                     "Property 'token' is required but was not provided "
-                            + "(supply it as 'token', or via the 'password' field)"
+                            + "(supply a Storage API token or a Personal Access Token as 'token', "
+                            + "or via the 'password' field)"
             );
         }
+        token = token.trim();
 
-        Long branchId    = parseOptionalLong(effectiveProps, "branch");
-        Long workspaceId = parseOptionalLong(effectiveProps, "workspace");
-        String schema    = parseOptionalString(effectiveProps, "schema");
+        AuthMode authMode = resolveAuthMode(effectiveProps, token);
+        Long projectId    = parseProjectId(effectiveProps);
 
-        return new ConnectionConfig(host, token.trim(), branchId, workspaceId, schema);
+        if (authMode == AuthMode.STORAGE_TOKEN && projectId != null) {
+            LOG.warn("Property '{}' is ignored with '{}' authentication — a Storage API token "
+                            + "is already scoped to a single project.",
+                    DriverConfig.PROP_PROJECT, AuthMode.STORAGE_TOKEN.propertyValue());
+            projectId = null;
+        }
+
+        Long branchId    = parseOptionalId(effectiveProps, DriverConfig.PROP_BRANCH);
+        Long workspaceId = parseOptionalId(effectiveProps, DriverConfig.PROP_WORKSPACE);
+        String schema    = parseOptionalString(effectiveProps, DriverConfig.PROP_SCHEMA);
+
+        return new ConnectionConfig(host, token, authMode, projectId, branchId, workspaceId, schema);
+    }
+
+    /**
+     * Determines how the credential is presented to the Keboola APIs. An explicit {@code auth}
+     * property wins even when it contradicts the credential's prefix — the user may be holding a
+     * credential whose shape the driver does not recognize.
+     *
+     * @throws KeboolaJdbcException if {@code auth} is present but names no known mode
+     */
+    private static AuthMode resolveAuthMode(Properties props, String credential) throws KeboolaJdbcException {
+        String raw = parseOptionalString(props, DriverConfig.PROP_AUTH);
+        if (raw == null) {
+            return PatAuthProvider.looksLikePat(credential) ? AuthMode.PAT : AuthMode.STORAGE_TOKEN;
+        }
+        AuthMode mode = AuthMode.fromPropertyValue(raw);
+        if (mode == null) {
+            throw KeboolaJdbcException.connectionFailed(
+                    "Property 'auth' has an unrecognized value '" + raw
+                            + "'. Accepted values: " + ACCEPTED_AUTH_VALUES
+            );
+        }
+        return mode;
+    }
+
+    /**
+     * Reads the optional {@code project} property as a positive project ID.
+     *
+     * @return the project ID, or null when the property is absent
+     * @throws KeboolaJdbcException if the value is not a positive number
+     */
+    private static Long parseProjectId(Properties props) throws KeboolaJdbcException {
+        Long projectId = parseOptionalId(props, DriverConfig.PROP_PROJECT);
+        if (projectId != null && projectId <= 0) {
+            throw KeboolaJdbcException.connectionFailed(
+                    "Property 'project' must be a positive project ID, got: " + projectId
+            );
+        }
+        return projectId;
     }
 
     /**
@@ -213,22 +307,28 @@ public class ConnectionConfig {
     }
 
     /**
-     * Reads an optional long property; returns null if absent or blank.
+     * Reads an optional ID-valued property; returns null if absent or blank. Accepts a bare
+     * number as well as the {@code "<id> (<name>)"} choice format, keeping every ID property
+     * readable from the dropdown values the driver itself advertises.
      *
-     * @throws KeboolaJdbcException if the value is present but not a valid number
+     * @throws KeboolaJdbcException if the value is present but carries no parsable ID
      */
-    private static Long parseOptionalLong(Properties props, String key) throws KeboolaJdbcException {
+    private static Long parseOptionalId(Properties props, String key) throws KeboolaJdbcException {
         String raw = props.getProperty(key);
         if (raw == null || raw.trim().isEmpty()) {
             return null;
         }
-        try {
-            return Long.parseLong(raw.trim());
-        } catch (NumberFormatException e) {
-            throw KeboolaJdbcException.connectionFailed(
-                    "Property '" + key + "' must be a valid number, got: " + raw
-            );
+        Matcher matcher = ID_WITH_OPTIONAL_LABEL.matcher(raw.trim());
+        if (matcher.matches()) {
+            try {
+                return Long.parseLong(matcher.group(1));
+            } catch (NumberFormatException e) {
+                // Digits that overflow a long — reported as malformed like any other bad value.
+            }
         }
+        throw KeboolaJdbcException.connectionFailed(
+                "Property '" + key + "' must be a valid number, got: " + raw
+        );
     }
 
     /**
@@ -249,9 +349,29 @@ public class ConnectionConfig {
         return host;
     }
 
-    /** Returns the Keboola Storage API token used to authenticate requests. */
+    /**
+     * Returns the credential used to authenticate requests — a Keboola Storage API token or a
+     * Personal Access Token, depending on {@link #getAuthMode()}.
+     */
     public String getToken() {
         return token;
+    }
+
+    /**
+     * Returns how the credential is presented to the Keboola APIs; never null. Reflects the
+     * explicit {@code auth} property when given, otherwise the credential's own prefix.
+     */
+    public AuthMode getAuthMode() {
+        return authMode;
+    }
+
+    /**
+     * Returns the project ID if explicitly configured for a Personal Access Token, or null to
+     * indicate that the caller should discover it. Always null for a Storage API token, whose
+     * project is fixed by the credential itself.
+     */
+    public Long getProjectId() {
+        return projectId;
     }
 
     /**
@@ -280,7 +400,8 @@ public class ConnectionConfig {
 
     @Override
     public String toString() {
-        return "ConnectionConfig{host='" + host + "', branchId=" + branchId
+        return "ConnectionConfig{host='" + host + "', authMode=" + authMode
+                + ", projectId=" + projectId + ", branchId=" + branchId
                 + ", workspaceId=" + workspaceId + ", schema=" + schema + "}";
     }
 }

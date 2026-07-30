@@ -1,6 +1,8 @@
 /**
  * Credentials provided by the user in the SQLTools connection form.
- * branchId and workspaceId are optional -- auto-detected when omitted.
+ * branchId, workspaceId and projectId are optional -- auto-detected when omitted.
+ * token holds either a project-scoped Storage API token or a Personal Access Token;
+ * the kind is recognised from its prefix.
  */
 export interface KeboolaCredentials {
   keboolaStack: string;
@@ -8,6 +10,20 @@ export interface KeboolaCredentials {
   token: string;
   branchId?: string;
   workspaceId?: string;
+  projectId?: string;
+}
+
+/** A project reachable by a Personal Access Token */
+export interface PatProject {
+  id: string;
+  name: string;
+}
+
+/** Response from GET /v1/auth/pat */
+export interface PatListResponse {
+  items?: {
+    projects?: { id?: number | string; name?: string }[];
+  }[];
 }
 
 /** Response from POST /api/v1/branches/{b}/workspaces/{w}/queries */

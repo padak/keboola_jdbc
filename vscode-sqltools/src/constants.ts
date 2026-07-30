@@ -53,6 +53,31 @@ export function getQueryUrl(connectionUrl: string): string {
   return connectionUrl.replace(/^connection\./, 'query.');
 }
 
+/** Literal prefix that identifies a Personal Access Token */
+export const PAT_TOKEN_PREFIX = 'kbc_pat_';
+
+/** Header carrying a project-scoped Storage API token */
+export const STORAGE_API_TOKEN_HEADER = 'X-StorageApi-Token';
+
+/** Header carrying a Personal Access Token as a bearer credential */
+export const AUTHORIZATION_HEADER = 'Authorization';
+
+/** Scheme prefix for the Authorization header value */
+export const BEARER_SCHEME = 'Bearer';
+
+/**
+ * Header naming the target project. A Personal Access Token is user-scoped and
+ * spans projects, so every Storage API request made with one must name a project.
+ */
+export const PROJECT_ID_HEADER = 'X-KBC-ProjectId';
+
+/**
+ * Lists the Personal Access Tokens reachable by the calling token together with
+ * the projects each one grants. An /v1/auth/* route, so it takes the bearer
+ * credential only and never the project header.
+ */
+export const PAT_DISCOVERY_PATH = '/v1/auth/pat';
+
 /** Polling configuration for query execution with exponential backoff */
 export const QUERY_POLLING = {
   INITIAL_INTERVAL_MS: 100,

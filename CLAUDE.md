@@ -8,9 +8,10 @@ Monorepo with two subprojects:
 - **jdbc-driver/** -- Java JDBC driver (v2.1.4) connecting DBeaver/DataGrip to Keboola projects
 - **vscode-sqltools/** -- TypeScript VSCode SQLTools extension (v2.1.4)
 
-Two API layers used by both:
-- **Storage API** (`connection.keboola.com`) - connection setup: tokens, branches, workspaces. Also provides data for virtual `_keboola.*` tables.
-- **Query Service API** (`query.keboola.com`, auto-discovered) - async SQL execution against Snowflake via workspace
+API layers:
+- **Storage API** (`connection.keboola.com`) - connection setup: tokens, branches, workspaces. Also provides data for virtual `_keboola.*` tables. Used by both subprojects.
+- **Query Service API** (`query.keboola.com`, auto-discovered) - async SQL execution against Snowflake via workspace. Used by both subprojects.
+- **Programmatic auth** (`/v1/auth/*` on the Connection host) - lists the projects a Personal Access Token can reach, so a PAT can be scoped to one project. Used by both subprojects.
 
 JDBC mapping: Catalog = Database (from Snowflake), Schema = Schema (from Snowflake), Table = Table. All metadata (databases, schemas, tables, columns) comes from SHOW commands executed via the Query Service. Virtual `_keboola.*` tables provide Keboola platform metadata (jobs, components, events, etc.) from the Storage API.
 
@@ -99,9 +100,12 @@ To build release-versioned artifacts locally (without a tag):
 `KeboolaStatement.execute(sql)` -> `QueryServiceClient.submitJob()` -> poll `waitForCompletion()` with exponential backoff (100ms->2s) -> `fetchResults()` (paginated, 1000 rows/page) -> `KeboolaResultSet` (lazy paging)
 
 #### Connection Setup Flow
-`KeboolaConnection(config)` -> `StorageApiClient.verifyToken()` -> `discoverQueryServiceUrl()` (from Storage API index) -> `resolveBranchId()` (auto-detect default) -> `resolveWorkspaceId()` (auto-select newest) -> create `QueryServiceClient` -> `initCatalogAndSchema()` (executes `SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()`)
+`KeboolaConnection(config)` -> `resolveAuthProvider()` (for a PAT also resolves the project) -> `StorageApiClient.verifyToken()` -> `discoverQueryServiceUrl()` (from Storage API index) -> `resolveBranchId()` (auto-detect default) -> `resolveWorkspaceId()` (auto-select newest) -> create `QueryServiceClient` -> `initCatalogAndSchema()` (executes `SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()`)
 
 #### Key Patterns
+- **Auth via `AuthProvider`**: `com.keboola.jdbc.auth.AuthProvider.authHeaders()` supplies the auth headers and is called **per request** (re-resolved on every retry attempt), so a credential that expires can be renewed without touching the HTTP clients. `StorageTokenAuthProvider` sends `X-StorageApi-Token`; `PatAuthProvider` sends `Authorization: Bearer` plus `X-KBC-ProjectId`. Both are immutable and redact the credential in `toString()`. All three HTTP clients take an `AuthProvider`, never a raw token string.
+- **PAT project resolution**: a Personal Access Token (`kbc_pat_` prefix) is user-scoped and cross-project, so Connection requires `X-KBC-ProjectId` on every Storage API path. The project comes from the `project` property, or from `ProgrammaticAuthClient.listPersonalAccessTokens()` (`GET /v1/auth/pat`, bearer only -- that route must NOT carry the project header). The response covers the calling token and its descendants; a descendant can never exceed its parent, so the union of `projects` across items is the caller's own access set. Exactly one project auto-selects; several fail with the list; none fails as an auth error.
+- **`HostUrls`**: shared host normalization for clients talking to the Connection host. Plaintext `http://` is honored only for loopback (test servers); a remote `http://` base is upgraded to `https://` because a credential rides on every request. Treat it as a security control.
 - **Metadata via SHOW commands**: `KeboolaDatabaseMetaData` executes `SHOW DATABASES`, `SHOW SCHEMAS`, `SHOW TABLES/VIEWS/OBJECTS`, and `SHOW COLUMNS` via the connection to proxy real Snowflake metadata. Column type info is parsed from JSON `data_type` field in `SHOW COLUMNS` output. Virtual `_keboola` schema is injected alongside real Snowflake schemas.
 - **Schema/catalog tracking via backendContext**: After each query, the driver reads `backendContext.catalog` and `backendContext.schema` from the Query Service response to keep local state in sync. Falls back to parsing USE SCHEMA/DATABASE from SQL if backendContext is not available. `setCatalog()`/`setSchema()` execute `USE DATABASE`/`USE SCHEMA` on the server.
 - **Virtual tables (`_keboola.*`)**: `VirtualTableMetadata` defines schema for `_keboola.components`, `_keboola.jobs`, `_keboola.events`, `_keboola.tables`, `_keboola.buckets`. Handled by `VirtualTableHandler` via `KeboolaCommandDispatcher`.
@@ -129,7 +133,11 @@ To build release-versioned artifacts locally (without a tag):
 - **Query Service URL auto-discovery**: `GET /v2/storage` -> parse `services[]` where `id === "query"`. Fallback: `connection.X` -> `query.X` naming convention.
 
 ### API Specifics
-- Workspace IDs can exceed `Integer.MAX_VALUE` -- use `long`/string everywhere (not `int`)
+- Workspace IDs can exceed `Integer.MAX_VALUE` -- use `long`/string everywhere (not `int`). The same applies to project IDs
+- Two credential kinds: a project-scoped Storage API token (`X-StorageApi-Token`) and a user-scoped Personal Access Token (`kbc_pat_` prefix, `Authorization: Bearer` + `X-KBC-ProjectId`). Query Service accepts both
+- `GET /v1/auth/pat` returns `{items: [...]}`; each item carries `scope` (`{"all": true}` or `{"projects": [...]}`) and a **live resolved** `projects` array, populated even for an `all` scope. It is a `/v1/auth/*` route, not a storage route -- no project header
+- Programmatic auth is a gated stack feature: when it is off, `/v1/auth/*` returns **404**, not 403. Treat 404 as "not enabled on this stack"
+- `GET /v1/auth/token/introspect` is session-only and returns 403 for a PAT bearer -- use `GET /v1/auth/pat` for PAT metadata
 - Storage API branches URL: `/v2/storage/dev-branches` (no trailing slash, follow redirects)
 - Query Service result page size minimum is 100
 - `StatementStatus.rowsAffected` is 0 for SELECT too -- use `numberOfRows > 0` + SQL keyword heuristic to distinguish SELECT from DML
@@ -138,13 +146,13 @@ To build release-versioned artifacts locally (without a tag):
 ## Testing
 
 ### JDBC Driver
-- 379 unit tests in `jdbc-driver/src/test/java/com/keboola/jdbc/`: TypeMapperTest, ConnectionConfigTest, ArrayResultSetTest, KeboolaDriverTest, KeboolaStatementTest, SchemaCacheTest, EpochConverterTest, HelpCommandHandlerTest, KeboolaCommandDispatcherTest, VirtualTableHandlerTest, KeboolaConnectionTest, KeboolaDatabaseMetaDataTest, KeboolaResultSetTest, http/StorageApiClientTest, http/QueryServiceClientTest, http/JobQueueClientTest
+- 526 unit tests in `jdbc-driver/src/test/java/com/keboola/jdbc/`: TypeMapperTest, ConnectionConfigTest, ArrayResultSetTest, KeboolaDriverTest, KeboolaStatementTest, SchemaCacheTest, EpochConverterTest, HelpCommandHandlerTest, KeboolaCommandDispatcherTest, VirtualTableHandlerTest, KeboolaConnectionTest, KeboolaDatabaseMetaDataTest, KeboolaResultSetTest, auth/AuthModeTest, auth/PatAuthProviderTest, auth/StorageTokenAuthProviderTest, http/StorageApiClientTest, http/QueryServiceClientTest, http/JobQueueClientTest, http/ProgrammaticAuthClientTest, http/HostUrlsTest, http/model/PatInfoTest
 - `KeboolaDriverIT` is an E2E integration test (run by `mvn verify -Pkeboola-integration`, skips without `KEBOOLA_TOKEN`)
 - `ManualConnectionTest` is a CLI integration test (not run by `mvn test`), needs `KEBOOLA_TOKEN` env var
 - Use JUnit 5 + Mockito 5.11
 
 ### VSCode Extension
-- 171 unit tests in `vscode-sqltools/src/test/suite/`: driver.test.ts, schema-cache.test.ts, virtual-tables.test.ts, epoch-converter.test.ts, schema.test.ts, constants.test.ts
+- 206 unit tests in `vscode-sqltools/src/test/suite/`: driver.test.ts, schema-cache.test.ts, virtual-tables.test.ts, epoch-converter.test.ts, schema.test.ts, constants.test.ts, auth.test.ts
 - 9 integration tests in `vscode-sqltools/tests/integration.test.ts` (needs `.env` with KEBOOLA_TOKEN)
 - Uses Mocha + VSCode test runner
 
@@ -166,13 +174,20 @@ jdbc-driver/src/main/java/com/keboola/jdbc/
 │   ├── VirtualTableHandler.java      # _keboola.* SQL detection + LIMIT parsing
 │   ├── VirtualTableRegistry.java     # API calls -> ArrayResultSet for each table
 │   └── VirtualTableMetadata.java     # Column definitions for IDE integration
+├── auth/
+│   ├── AuthProvider.java             # Per-request auth headers interface
+│   ├── AuthMode.java                 # STORAGE_TOKEN | PAT ('auth' property values)
+│   ├── StorageTokenAuthProvider.java # X-StorageApi-Token
+│   └── PatAuthProvider.java          # Authorization: Bearer + X-KBC-ProjectId
 ├── config/
-│   ├── DriverConfig.java             # Driver constants and defaults
-│   └── ConnectionConfig.java         # URL + properties parsing
+│   ├── DriverConfig.java             # Driver constants, property names and defaults
+│   └── ConnectionConfig.java         # URL + properties parsing, auth mode detection
 ├── http/
 │   ├── StorageApiClient.java         # Storage API v2 (virtual tables + discovery)
 │   ├── QueryServiceClient.java       # Query Service API v1 (SQL + SHOW metadata)
 │   ├── JobQueueClient.java           # Job Queue API client (lazy init)
+│   ├── ProgrammaticAuthClient.java   # /v1/auth/* (PAT project discovery)
+│   ├── HostUrls.java                 # Host normalization + https upgrade
 │   └── model/                        # API data models
 ├── meta/
 │   └── TypeMapper.java               # Snowflake -> JDBC type mapping

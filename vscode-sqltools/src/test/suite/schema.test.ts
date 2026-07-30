@@ -163,4 +163,82 @@ suite('Connection Schema Validation', () => {
     const valid = validate(data);
     assert.strictEqual(valid, true, `Schema should not require branchId/workspaceId: ${JSON.stringify(validate.errors)}`);
   });
+
+  test('Personal Access Token with projectId should pass', () => {
+    const data = {
+      name: 'PAT Connection',
+      keboolaStack: 'connection.keboola.com',
+      token: 'kbc_pat_placeholder-personal-access-token',
+      projectId: '1234',
+    };
+    const valid = validate(data);
+    assert.strictEqual(valid, true, `Schema validation failed: ${JSON.stringify(validate.errors)}`);
+  });
+
+  test('projectId is NOT required', () => {
+    const data = {
+      name: 'Test',
+      keboolaStack: 'connection.keboola.com',
+      token: 'kbc_pat_placeholder-personal-access-token',
+    };
+    const valid = validate(data);
+    assert.strictEqual(valid, true, `Schema should not require projectId: ${JSON.stringify(validate.errors)}`);
+  });
+
+  // Project ids can exceed the 32-bit range, so they are carried as strings.
+  test('numeric projectId should fail (must be a string)', () => {
+    const data = {
+      name: 'Test',
+      keboolaStack: 'connection.keboola.com',
+      token: 'token',
+      projectId: 1234,
+    };
+    assert.strictEqual(validate(data), false);
+  });
+
+  test('projectId beyond the 32-bit range should pass as a string', () => {
+    const data = {
+      name: 'Test',
+      keboolaStack: 'connection.keboola.com',
+      token: 'kbc_pat_placeholder-personal-access-token',
+      projectId: '9007199254740993',
+    };
+    const valid = validate(data);
+    assert.strictEqual(valid, true, `Schema validation failed: ${JSON.stringify(validate.errors)}`);
+  });
+});
+
+suite('UI Schema Consistency', () => {
+  let connectionSchema: any;
+  let uiSchema: any;
+
+  suiteSetup(() => {
+    const base = path.resolve(__dirname, '../../..');
+    connectionSchema = JSON.parse(fs.readFileSync(path.join(base, 'connection.schema.json'), 'utf-8'));
+    uiSchema = JSON.parse(fs.readFileSync(path.join(base, 'ui.schema.json'), 'utf-8'));
+  });
+
+  test('ui:order lists every connection schema property', () => {
+    const properties = Object.keys(connectionSchema.properties);
+    for (const property of properties) {
+      assert.ok(
+        uiSchema['ui:order'].includes(property),
+        `Property "${property}" is missing from ui:order in ui.schema.json`
+      );
+    }
+  });
+
+  test('ui:order contains no unknown properties', () => {
+    const properties = Object.keys(connectionSchema.properties);
+    for (const ordered of uiSchema['ui:order']) {
+      assert.ok(
+        properties.includes(ordered),
+        `ui:order references unknown property "${ordered}"`
+      );
+    }
+  });
+
+  test('token field stays masked', () => {
+    assert.strictEqual(uiSchema.token['ui:widget'], 'password');
+  });
 });

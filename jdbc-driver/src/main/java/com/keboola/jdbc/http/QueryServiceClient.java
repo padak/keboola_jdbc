@@ -2,6 +2,7 @@ package com.keboola.jdbc.http;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.keboola.jdbc.auth.AuthProvider;
 import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.model.JobStatus;
@@ -17,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -33,11 +35,10 @@ public class QueryServiceClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(QueryServiceClient.class);
 
-    private static final String HEADER_TOKEN  = "X-StorageAPI-Token";
     private static final MediaType JSON_MEDIA  = MediaType.parse("application/json");
 
     private final String       queryServiceUrl;
-    private final String       token;
+    private final AuthProvider authProvider;
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
 
@@ -45,13 +46,13 @@ public class QueryServiceClient {
      * Creates a new Query Service client.
      *
      * @param queryServiceUrl base URL of the Query Service, e.g. "https://query.keboola.com"
-     * @param token           Keboola Storage API token used for all requests
+     * @param authProvider    supplies the authentication headers for every request
      */
-    public QueryServiceClient(String queryServiceUrl, String token) {
+    public QueryServiceClient(String queryServiceUrl, AuthProvider authProvider) {
         this.queryServiceUrl = queryServiceUrl.endsWith("/")
                 ? queryServiceUrl.substring(0, queryServiceUrl.length() - 1)
                 : queryServiceUrl;
-        this.token = token;
+        this.authProvider = authProvider;
 
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(DriverConfig.HTTP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -265,7 +266,6 @@ public class QueryServiceClient {
     private String executeGet(String url) throws KeboolaJdbcException {
         Request request = new Request.Builder()
                 .url(url)
-                .header(HEADER_TOKEN, token)
                 .get()
                 .build();
         return executeWithRetry(request, url);
@@ -276,7 +276,6 @@ public class QueryServiceClient {
         RequestBody requestBody = RequestBody.create(jsonBody, JSON_MEDIA);
         Request request = new Request.Builder()
                 .url(url)
-                .header(HEADER_TOKEN, token)
                 .post(requestBody)
                 .build();
         return executeWithRetry(request, url);
@@ -286,6 +285,8 @@ public class QueryServiceClient {
      * Executes the given request with exponential back-off retry for transient errors.
      * Retries up to {@link DriverConfig#MAX_RETRIES} times for 5xx and 429 responses.
      * Fails immediately for 401/403 and 400 responses.
+     *
+     * @param request the HTTP request to execute, without authentication headers
      */
     private String executeWithRetry(Request request, String urlForLog) throws KeboolaJdbcException {
         int  attempts = 0;
@@ -296,7 +297,10 @@ public class QueryServiceClient {
             LOG.debug("HTTP {} {} (attempt {}/{})",
                     request.method(), urlForLog, attempts, DriverConfig.MAX_RETRIES);
 
-            try (Response response = httpClient.newCall(request).execute()) {
+            // Resolved per attempt so a provider backed by an expiring credential can renew it.
+            Request authenticated = withAuthHeaders(request);
+
+            try (Response response = httpClient.newCall(authenticated).execute()) {
                 int code = response.code();
                 LOG.debug("HTTP {} <- {}", code, urlForLog);
 
@@ -347,6 +351,15 @@ public class QueryServiceClient {
                         DriverConfig.POLL_MAX_INTERVAL_MS);
             }
         }
+    }
+
+    /** Returns a copy of the request carrying the currently valid authentication headers. */
+    private Request withAuthHeaders(Request request) throws KeboolaJdbcException {
+        Request.Builder builder = request.newBuilder();
+        for (Map.Entry<String, String> header : authProvider.authHeaders().entrySet()) {
+            builder.header(header.getKey(), header.getValue());
+        }
+        return builder.build();
     }
 
     /** Deserializes a JSON string into the specified type. */

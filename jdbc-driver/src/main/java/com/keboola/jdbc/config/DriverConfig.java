@@ -48,6 +48,40 @@ public final class DriverConfig {
     /** Prefix that all Keboola JDBC URLs must start with. */
     public static final String URL_PREFIX = "jdbc:keboola://";
 
+    // --- Connection property names ---
+    // Each may be supplied via a Properties entry or as a JDBC URL query parameter.
+
+    /** Storage API token or Personal Access Token. */
+    public static final String PROP_TOKEN     = "token";
+
+    /** Standard JDBC password property, accepted as a fallback carrier for {@link #PROP_TOKEN}. */
+    public static final String PROP_PASSWORD  = "password";
+
+    /** Authentication mode; values are {@code AuthMode.propertyValue()}. */
+    public static final String PROP_AUTH      = "auth";
+
+    /** Numeric project ID a Personal Access Token operates on. */
+    public static final String PROP_PROJECT   = "project";
+
+    /** Branch ID to execute queries against. */
+    public static final String PROP_BRANCH    = "branch";
+
+    /** Workspace ID to execute queries in. */
+    public static final String PROP_WORKSPACE = "workspace";
+
+    /** Default schema for unqualified table references. */
+    public static final String PROP_SCHEMA    = "schema";
+
+    // --- API paths ---
+
+    /**
+     * Lists the calling Personal Access Token and its descendants, each with the resolved set
+     * of projects it can access. Authenticated by the bearer credential alone — being a
+     * {@code /v1/auth/*} route it must not carry a project header. Returns 404 when
+     * programmatic authentication is not enabled on the stack.
+     */
+    public static final String PAT_LIST_PATH = "/v1/auth/pat";
+
     // --- Result paging ---
 
     /** Default number of rows requested per page when fetching query results. Minimum allowed by API is 100. */

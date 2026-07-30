@@ -5,6 +5,7 @@ A VS Code extension that connects [SQLTools](https://vscode-sqltools.mteixeira.d
 ## Features
 
 - **SQL Query Execution** - Run SQL queries against Keboola workspaces via the Query Service API with paginated result fetching
+- **Storage API Token or Personal Access Token** - Paste either credential into the same field; the kind is recognised from its prefix and the project is resolved for you
 - **Database Explorer** - Browse buckets, tables, and columns with data types in the SQLTools sidebar
 - **Auto-Discovery** - Automatically discovers the Query Service URL, default branch, and newest workspace
 - **Session Persistence** - Maintains server-side session state across queries using a persistent session ID
@@ -42,9 +43,35 @@ A VS Code extension that connects [SQLTools](https://vscode-sqltools.mteixeira.d
 | **Connection Name** | Yes | A display name for this connection |
 | **Keboola Stack** | Yes | Select your Keboola stack from the dropdown (e.g., `connection.keboola.com`, `connection.eu-central-1.keboola.com`) or choose `custom` for a custom URL |
 | **Custom Connection URL** | Only if stack is `custom` | The full connection URL (e.g., `connection.mycompany.keboola.com`) |
-| **Storage API Token** | Yes | Your Keboola Storage API token (found in Keboola UI under Settings > API Tokens) |
+| **Token** | Yes | A Storage API token or a Personal Access Token — see [Credentials](#credentials) |
+| **Project ID** | Only with a Personal Access Token | The project to work in. If omitted, it is auto-filled on first connect |
 | **Branch ID** | No | Specific branch ID. If omitted, the default branch is auto-detected |
 | **Workspace ID** | No | Specific workspace ID. If omitted, the newest workspace is auto-selected |
+
+### Credentials
+
+The **Token** field accepts either kind of credential. The extension recognises which
+one you pasted from its prefix, so there is nothing else to switch:
+
+| Credential | Looks like | Scope | Where to get it |
+|------------|-----------|-------|-----------------|
+| **Storage API token** | `1234-56789-abcdefplaceholder` | One project | Keboola UI, project **Settings > API Tokens** |
+| **Personal Access Token (PAT)** | `kbc_pat_placeholderplaceholder` | Your user account, across every project you can access | Keboola UI, your **Account Settings** |
+
+A Storage API token already belongs to a single project, so **Project ID** is ignored
+for it and no extra prompt appears.
+
+A Personal Access Token identifies *you*, not a project, so every request has to name
+the project to work in:
+
+- Leave **Project ID** empty and the extension lists the projects the token can reach
+  when you save the connection. One project is selected silently; several open a picker;
+  the selected id is stored in the connection so you are not asked again.
+- Fill **Project ID** in yourself to pin a project and skip the lookup entirely.
+
+Personal Access Tokens require the `programmatic-auth` feature to be enabled on your
+Keboola stack. Without it the extension reports that PAT support is not enabled on the
+stack — use a Storage API token there.
 
 ## Usage
 
@@ -174,6 +201,7 @@ This produces a `.vsix` file in the `vscode-sqltools/` directory.
 vscode-sqltools/
   src/
     extension.ts          # VS Code entry point
+    auth.ts               # Credential kind detection, auth headers, project discovery
     constants.ts          # All configuration constants
     types.ts              # TypeScript interfaces
     ls/

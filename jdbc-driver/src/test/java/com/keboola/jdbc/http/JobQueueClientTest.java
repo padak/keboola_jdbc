@@ -1,6 +1,8 @@
 package com.keboola.jdbc.http;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.keboola.jdbc.auth.PatAuthProvider;
+import com.keboola.jdbc.auth.StorageTokenAuthProvider;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -18,21 +20,23 @@ import static com.keboola.jdbc.http.MockServerFixture.jsonResponse;
 import static com.keboola.jdbc.http.MockServerFixture.rawResponse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JobQueueClientTest {
 
     private MockWebServer server;
+    private String baseUrl;
     private JobQueueClient client;
 
     @BeforeEach
     void setUp() throws Exception {
         server = new MockWebServer();
         server.start();
-        String baseUrl = server.url("").toString();
         // strip trailing slash so the client builds the same URL it would in production
-        client = new JobQueueClient(baseUrl.replaceAll("/$", ""), "test-token");
+        baseUrl = server.url("").toString().replaceAll("/$", "");
+        client = new JobQueueClient(baseUrl, new StorageTokenAuthProvider("test-token"));
     }
 
     @AfterEach
@@ -116,5 +120,36 @@ class JobQueueClientTest {
         assertTrue(req.getPath().contains("limit=42"), "Path should carry limit=42: " + req.getPath());
         assertTrue(req.getPath().contains("sortBy=id"), "Path should carry sortBy=id: " + req.getPath());
         assertTrue(req.getPath().contains("sortOrder=desc"), "Path should carry sortOrder=desc: " + req.getPath());
+    }
+
+    @Test
+    void patProvider_sendsBearerAndProjectHeader_withoutStorageTokenHeader() throws Exception {
+        JobQueueClient patClient = new JobQueueClient(
+                baseUrl, new PatAuthProvider("kbc_pat_secret", 4321L));
+        server.enqueue(jsonResponse(200, Collections.emptyList()));
+
+        patClient.listJobs(10);
+
+        RecordedRequest req = server.takeRequest();
+        assertEquals("Bearer kbc_pat_secret", req.getHeader("Authorization"));
+        assertEquals("4321", req.getHeader("X-KBC-ProjectId"));
+        assertNull(req.getHeader("X-StorageApi-Token"));
+    }
+
+    @Test
+    void authHeaders_areResolvedPerRequest() throws Exception {
+        RotatingAuthProvider rotating = new RotatingAuthProvider();
+        JobQueueClient rotatingClient = new JobQueueClient(baseUrl, rotating);
+        server.enqueue(jsonResponse(200, Collections.emptyList()));
+        server.enqueue(jsonResponse(200, Collections.emptyList()));
+
+        rotatingClient.listJobs(10);
+        rotatingClient.listJobs(10);
+
+        assertEquals(RotatingAuthProvider.tokenForCall(1),
+                server.takeRequest().getHeader("X-StorageApi-Token"));
+        assertEquals(RotatingAuthProvider.tokenForCall(2),
+                server.takeRequest().getHeader("X-StorageApi-Token"),
+                "The second call must carry the freshly resolved credential");
     }
 }

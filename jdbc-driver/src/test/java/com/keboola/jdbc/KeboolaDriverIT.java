@@ -26,8 +26,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * End-to-end integration tests for the Keboola JDBC driver.
  *
  * Requires environment variables:
- *   KEBOOLA_TOKEN     - Storage API token (required)
+ *   KEBOOLA_TOKEN     - Storage API token or Personal Access Token (required)
  *   KEBOOLA_HOST      - Connection host (default: connection.keboola.com)
+ *   KEBOOLA_PROJECT   - Project ID (optional; needed only for a Personal Access Token
+ *                       that reaches more than one project)
  *   KEBOOLA_WORKSPACE - Workspace ID (optional, auto-discovers if not set)
  *   KEBOOLA_BRANCH    - Branch ID (optional, uses default branch if not set)
  *
@@ -54,22 +56,33 @@ class KeboolaDriverIT {
         // Force driver registration
         Class.forName("com.keboola.jdbc.KeboolaDriver");
 
+        String url = "jdbc:keboola://" + host;
+        connection = DriverManager.getConnection(url, connectionProperties());
+        assertNotNull(connection, "Connection should not be null");
+    }
+
+    /**
+     * Builds the connection properties from the environment. The credential may be a Storage
+     * API token or a Personal Access Token; the driver tells them apart by prefix.
+     */
+    private static Properties connectionProperties() {
         Properties props = new Properties();
         props.setProperty("token", token);
 
-        String workspace = System.getenv("KEBOOLA_WORKSPACE");
-        if (workspace != null && !workspace.isEmpty()) {
-            props.setProperty("workspace", workspace);
-        }
+        // Only a Personal Access Token needs a project, and only when it reaches several;
+        // a single-project token is resolved by the driver.
+        putIfSet(props, "project", "KEBOOLA_PROJECT");
+        putIfSet(props, "workspace", "KEBOOLA_WORKSPACE");
+        putIfSet(props, "branch", "KEBOOLA_BRANCH");
+        return props;
+    }
 
-        String branch = System.getenv("KEBOOLA_BRANCH");
-        if (branch != null && !branch.isEmpty()) {
-            props.setProperty("branch", branch);
+    /** Copies an environment variable into the properties when it carries a value. */
+    private static void putIfSet(Properties props, String property, String envVar) {
+        String value = System.getenv(envVar);
+        if (value != null && !value.isEmpty()) {
+            props.setProperty(property, value);
         }
-
-        String url = "jdbc:keboola://" + host;
-        connection = DriverManager.getConnection(url, props);
-        assertNotNull(connection, "Connection should not be null");
     }
 
     @AfterAll
@@ -572,20 +585,7 @@ class KeboolaDriverIT {
     @Test
     @Order(70)
     void connection_canCreateSecondConnection() throws Exception {
-        Properties props = new Properties();
-        props.setProperty("token", token);
-
-        String workspace = System.getenv("KEBOOLA_WORKSPACE");
-        if (workspace != null && !workspace.isEmpty()) {
-            props.setProperty("workspace", workspace);
-        }
-
-        String branch = System.getenv("KEBOOLA_BRANCH");
-        if (branch != null && !branch.isEmpty()) {
-            props.setProperty("branch", branch);
-        }
-
-        try (Connection conn2 = DriverManager.getConnection("jdbc:keboola://" + host, props)) {
+        try (Connection conn2 = DriverManager.getConnection("jdbc:keboola://" + host, connectionProperties())) {
             assertTrue(conn2.isValid(5));
             assertNotNull(conn2.getCatalog());
 

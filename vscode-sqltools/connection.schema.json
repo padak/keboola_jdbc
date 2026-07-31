@@ -35,9 +35,15 @@
       "description": "Full connection URL for custom/single-tenant stacks (e.g., connection.yourcompany.keboola.com)"
     },
     "token": {
-      "title": "Storage API Token",
+      "title": "Token",
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "Storage API token, or a Personal Access Token (starts with kbc_pat_)"
+    },
+    "projectId": {
+      "title": "Project ID",
+      "type": "string",
+      "description": "Only for a Personal Access Token — auto-filled on first connect, you will pick from accessible projects"
     },
     "branchId": {
       "title": "Branch ID",

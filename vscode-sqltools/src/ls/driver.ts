@@ -35,6 +35,13 @@ import {
   BucketInfo,
   TableInfo,
 } from '../types';
+import {
+  buildAuthHeaders,
+  detectAuthMode,
+  fetchAccessibleProjects,
+  PAT_AMBIGUOUS_PROJECT_MESSAGE,
+  PAT_NO_PROJECTS_MESSAGE,
+} from '../auth';
 import * as crypto from 'crypto';
 
 type DriverOptions = any;
@@ -62,6 +69,8 @@ export default class KeboolaDriver
   private connectionUrl = '';
   /** Resolved query service URL (e.g., query.keboola.com) */
   private queryServiceUrl = '';
+  /** Resolved project ID, empty for a project-scoped Storage API token */
+  private projectId = '';
   /** Resolved branch ID */
   private branchId = '';
   /** Resolved workspace ID */
@@ -89,20 +98,24 @@ export default class KeboolaDriver
       this.creds.customConnectionUrl
     );
 
-    // 2. Auto-discover Query Service URL from Storage API index
+    // 2. Resolve project ID (required by a Personal Access Token, which spans projects)
+    this.projectId = await this.resolveProjectId();
+
+    // 3. Auto-discover Query Service URL from Storage API index
     this.queryServiceUrl = await this.discoverQueryServiceUrl();
 
-    // 3. Resolve branch ID (from config or auto-detect default)
+    // 4. Resolve branch ID (from config or auto-detect default)
     this.branchId = await this.resolveBranchId();
 
-    // 4. Resolve workspace ID (from config or auto-select newest)
+    // 5. Resolve workspace ID (from config or auto-select newest)
     this.workspaceId = await this.resolveWorkspaceId();
 
-    // 5. Generate session ID for server-side session persistence
+    // 6. Generate session ID for server-side session persistence
     this.sessionId = crypto.randomUUID();
 
     this.log.info(
-      `Connected to Keboola: branch=${this.branchId}, workspace=${this.workspaceId}, session=${this.sessionId}`
+      `Connected to Keboola: ${this.projectId ? `project=${this.projectId}, ` : ''}` +
+        `branch=${this.branchId}, workspace=${this.workspaceId}, session=${this.sessionId}`
     );
 
     this.connection = Promise.resolve(true as any);
@@ -115,6 +128,7 @@ export default class KeboolaDriver
     KeboolaDriver.instances.delete(this.getId());
     this.connectionUrl = '';
     this.queryServiceUrl = '';
+    this.projectId = '';
     this.branchId = '';
     this.workspaceId = '';
     this.sessionId = '';
@@ -129,6 +143,31 @@ export default class KeboolaDriver
   }
 
   // -- Auto-discovery ---------------------------------------------------------
+
+  /**
+   * Resolves the project a Personal Access Token addresses. Empty for a Storage
+   * API token, which is already bound to a single project.
+   *
+   * The language server has no UI, so a token reaching several projects requires
+   * the project to be configured explicitly.
+   */
+  private async resolveProjectId(): Promise<string> {
+    if (detectAuthMode(this.creds.token) !== 'pat') {
+      return '';
+    }
+    const configured = (this.creds.projectId || '').trim();
+    if (configured) {
+      return configured;
+    }
+    const projects = await fetchAccessibleProjects(this.connectionUrl, this.creds.token);
+    if (projects.length === 0) {
+      throw new Error(PAT_NO_PROJECTS_MESSAGE);
+    }
+    if (projects.length > 1) {
+      throw new Error(PAT_AMBIGUOUS_PROJECT_MESSAGE);
+    }
+    return projects[0].id;
+  }
 
   /**
    * Discovers the Query Service URL from the Storage API index.
@@ -981,6 +1020,11 @@ export default class KeboolaDriver
   ): Promise<T> {
     const url = `https://${baseUrl}${path}`;
     const method = options?.method || 'GET';
+    // Built outside the retry loop: a credential problem is not worth retrying.
+    const authHeaders = buildAuthHeaders({
+      token: this.creds.token,
+      projectId: this.projectId,
+    });
 
     let lastError: Error | null = null;
 
@@ -994,7 +1038,7 @@ export default class KeboolaDriver
           response = await fetch(url, {
             method,
             headers: {
-              'X-StorageApi-Token': this.creds.token,
+              ...authHeaders,
               'Content-Type': 'application/json',
             },
             body: options?.body,
@@ -1017,7 +1061,9 @@ export default class KeboolaDriver
         // Non-retryable errors
         if (response.status === 401) {
           throw new Error(
-            'Invalid or expired Storage API token. Please check your connection settings.'
+            detectAuthMode(this.creds.token) === 'pat'
+              ? 'Invalid or expired Personal Access Token. Please check your connection settings.'
+              : 'Invalid or expired Storage API token. Please check your connection settings.'
           );
         }
         if (response.status === 403) {

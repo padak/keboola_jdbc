@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 import { IExtension, IExtensionPlugin, IDriverExtensionApi, IConnection } from '@sqltools/types';
 import { DRIVER_ALIASES, getConnectionUrl, HTTP_TIMEOUT_MS } from './constants';
+import {
+  AuthContext,
+  buildAuthHeaders,
+  detectAuthMode,
+  fetchAccessibleProjects,
+  PAT_NO_PROJECTS_MESSAGE,
+} from './auth';
 
 const { publisher, name, displayName } = require('../package.json');
 
@@ -8,12 +15,12 @@ const { publisher, name, displayName } = require('../package.json');
  * Makes an authenticated request to the Keboola Storage API.
  * Used in the extension context (not the LS driver) for connection setup.
  */
-async function storageApiGet<T = any>(connectionUrl: string, token: string, path: string): Promise<T> {
+async function storageApiGet<T = any>(connectionUrl: string, auth: AuthContext, path: string): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
     const response = await fetch(`https://${connectionUrl}${path}`, {
-      headers: { 'X-StorageApi-Token': token },
+      headers: buildAuthHeaders(auth),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -39,8 +46,8 @@ async function storageApiGet<T = any>(connectionUrl: string, token: string, path
  * Shows QuickPick for branch selection if branchId is empty.
  * Returns the selected branchId or undefined if resolution failed.
  */
-async function resolveBranchId(connectionUrl: string, token: string): Promise<string | undefined> {
-  const branches = await storageApiGet<any[]>(connectionUrl, token, '/v2/storage/dev-branches');
+async function resolveBranchId(connectionUrl: string, auth: AuthContext): Promise<string | undefined> {
+  const branches = await storageApiGet<any[]>(connectionUrl, auth, '/v2/storage/dev-branches');
   if (branches.length === 1) {
     return String(branches[0].id);
   }
@@ -64,8 +71,8 @@ async function resolveBranchId(connectionUrl: string, token: string): Promise<st
  * Shows QuickPick for workspace selection if workspaceId is empty.
  * Returns the selected workspaceId or undefined if resolution failed.
  */
-async function resolveWorkspaceId(connectionUrl: string, token: string): Promise<string | undefined> {
-  const workspaces = await storageApiGet<any[]>(connectionUrl, token, '/v2/storage/workspaces');
+async function resolveWorkspaceId(connectionUrl: string, auth: AuthContext): Promise<string | undefined> {
+  const workspaces = await storageApiGet<any[]>(connectionUrl, auth, '/v2/storage/workspaces');
   if (workspaces.length === 0) {
     throw new Error('No workspaces found. Create a workspace in Keboola first.');
   }
@@ -85,16 +92,60 @@ async function resolveWorkspaceId(connectionUrl: string, token: string): Promise
 }
 
 /**
- * Fills in branchId and workspaceId via QuickPick if they are empty.
+ * Shows QuickPick for project selection when a Personal Access Token reaches
+ * more than one project. Returns the selected projectId, or undefined when the
+ * user dismissed the picker.
+ */
+async function resolveProjectId(connectionUrl: string, token: string): Promise<string | undefined> {
+  const projects = await fetchAccessibleProjects(connectionUrl, token);
+  if (projects.length === 0) {
+    throw new Error(PAT_NO_PROJECTS_MESSAGE);
+  }
+  if (projects.length === 1) {
+    return projects[0].id;
+  }
+  const items = projects.map((p) => ({
+    label: p.name,
+    description: `ID: ${p.id}`,
+    projectId: p.id,
+  }));
+  const picked = await vscode.window.showQuickPick(items, {
+    title: 'Select Keboola Project',
+    placeHolder: 'Select the project to connect to',
+  });
+  return picked ? picked.projectId : undefined;
+}
+
+/**
+ * Fills in projectId, branchId and workspaceId via QuickPick if they are empty.
  * Used by both parseBeforeSaveConnection and resolveConnection.
  */
 async function fillConnectionFields(connInfo: any): Promise<void> {
   const connectionUrl = getConnectionUrl(connInfo.keboolaStack, connInfo.customConnectionUrl);
-  const token = connInfo.token;
+  const isPat = detectAuthMode(connInfo.token) === 'pat';
+
+  if (isPat && !connInfo.projectId) {
+    try {
+      const projectId = await resolveProjectId(connectionUrl, connInfo.token);
+      if (projectId) {
+        connInfo.projectId = projectId;
+      }
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Keboola: ${err.message}`);
+    }
+  }
+
+  // A Personal Access Token spans projects, so no Storage API call can be made
+  // before one is chosen.
+  if (isPat && !connInfo.projectId) {
+    return;
+  }
+
+  const auth: AuthContext = { token: connInfo.token, projectId: connInfo.projectId };
 
   if (!connInfo.branchId) {
     try {
-      const branchId = await resolveBranchId(connectionUrl, token);
+      const branchId = await resolveBranchId(connectionUrl, auth);
       if (branchId) {
         connInfo.branchId = branchId;
       }
@@ -107,7 +158,7 @@ async function fillConnectionFields(connInfo: any): Promise<void> {
 
   if (!connInfo.workspaceId) {
     try {
-      const workspaceId = await resolveWorkspaceId(connectionUrl, token);
+      const workspaceId = await resolveWorkspaceId(connectionUrl, auth);
       if (workspaceId) {
         connInfo.workspaceId = workspaceId;
       }

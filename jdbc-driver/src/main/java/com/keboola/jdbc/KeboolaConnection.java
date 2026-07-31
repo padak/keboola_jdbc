@@ -1,12 +1,19 @@
 package com.keboola.jdbc;
 
+import com.keboola.jdbc.auth.AuthMode;
+import com.keboola.jdbc.auth.AuthProvider;
+import com.keboola.jdbc.auth.PatAuthProvider;
+import com.keboola.jdbc.auth.StorageTokenAuthProvider;
 import com.keboola.jdbc.config.ConnectionConfig;
+import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.JobQueueClient;
+import com.keboola.jdbc.http.ProgrammaticAuthClient;
 import com.keboola.jdbc.http.QueryServiceClient;
 import com.keboola.jdbc.http.StorageApiClient;
 import com.keboola.jdbc.http.model.Branch;
 import com.keboola.jdbc.http.model.JobStatus;
+import com.keboola.jdbc.http.model.PatInfo;
 import com.keboola.jdbc.http.model.QueryJob;
 import com.keboola.jdbc.http.model.QueryResult;
 import com.keboola.jdbc.http.model.StatementStatus;
@@ -32,18 +39,23 @@ import java.sql.SQLXML;
 import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Struct;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * JDBC Connection implementation for Keboola.
  *
  * <p>On construction the following setup is performed:
  * <ol>
- *   <li>Create a {@link StorageApiClient} and verify the provided token</li>
+ *   <li>Build the {@link AuthProvider} for the supplied credential — for a Personal Access
+ *       Token this includes resolving the project the connection is scoped to</li>
+ *   <li>Create a {@link StorageApiClient} and verify the credential</li>
  *   <li>Discover the Query Service URL via the Storage API</li>
  *   <li>Resolve the branch ID (from config or by finding the default branch)</li>
  *   <li>Resolve the workspace ID (required - must be provided in config)</li>
@@ -84,18 +96,21 @@ public class KeboolaConnection implements Connection {
     /**
      * Establishes a connection to Keboola using the provided configuration.
      *
-     * @param config the parsed connection configuration (host, token, optional branch/workspace)
-     * @throws SQLException if token verification, service discovery, or branch/workspace resolution fails
+     * @param config the parsed connection configuration (host, credential, optional project/branch/workspace)
+     * @throws SQLException if credential verification, project/service discovery, or branch/workspace
+     *                      resolution fails
      */
     public KeboolaConnection(ConnectionConfig config) throws SQLException {
-        LOG.info("Connecting to Keboola: host={}", config.getHost());
+        LOG.info("Connecting to Keboola: host={}, auth={}",
+                config.getHost(), config.getAuthMode().propertyValue());
 
         try {
             this.host = config.getHost();
-            storageClient = new StorageApiClient(config.getHost(), config.getToken());
+            AuthProvider authProvider = resolveAuthProvider(config);
+            storageClient = new StorageApiClient(config.getHost(), authProvider);
             tokenInfo = verifyToken();
             String queryServiceUrl = discoverQueryServiceUrl();
-            queryClient = new QueryServiceClient(queryServiceUrl, config.getToken());
+            queryClient = new QueryServiceClient(queryServiceUrl, authProvider);
             branchId = resolveBranchId(config);
             workspaceId = resolveWorkspaceId(config);
 
@@ -116,8 +131,8 @@ public class KeboolaConnection implements Connection {
             // Discover current database and schema from the server
             initCatalogAndSchema();
 
-            LOG.info("Connected: catalog='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
-                    catalog, branchId, workspaceId, currentSchema, sessionId);
+            LOG.info("Connected: auth={}, catalog='{}', branchId={}, workspaceId={}, schema={}, sessionId={}",
+                    describeAuth(authProvider), catalog, branchId, workspaceId, currentSchema, sessionId);
 
         } catch (KeboolaJdbcException e) {
             throw new SQLException("Failed to connect to Keboola: " + e.getMessage(), e);
@@ -154,10 +169,105 @@ public class KeboolaConnection implements Connection {
     // Connection setup helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * Builds the {@link AuthProvider} for the configured credential.
+     *
+     * <p>A Storage API token carries its own project, so it needs nothing further. A Personal
+     * Access Token is user-scoped and cross-project, so the target project must be known before
+     * the first request — taken from the {@code project} property when supplied, otherwise
+     * discovered from the token's own access set.
+     */
+    private static AuthProvider resolveAuthProvider(ConnectionConfig config) throws KeboolaJdbcException {
+        return resolveAuthProvider(config,
+                () -> new ProgrammaticAuthClient(config.getHost(), config.getToken()));
+    }
+
+    /**
+     * Builds the {@link AuthProvider}, obtaining the programmatic auth client from
+     * {@code authClientFactory} only when project discovery is actually needed.
+     *
+     * @param config            parsed connection configuration
+     * @param authClientFactory supplies the client used to list the Personal Access Token's projects
+     */
+    static AuthProvider resolveAuthProvider(ConnectionConfig config,
+                                            Supplier<ProgrammaticAuthClient> authClientFactory)
+            throws KeboolaJdbcException {
+        if (config.getAuthMode() != AuthMode.PAT) {
+            return new StorageTokenAuthProvider(config.getToken());
+        }
+
+        Long configuredProject = config.getProjectId();
+        if (configuredProject != null) {
+            LOG.debug("Using configured projectId={}", configuredProject);
+            return new PatAuthProvider(config.getToken(), configuredProject);
+        }
+
+        LOG.debug("No project configured, discovering the projects the Personal Access Token can access");
+        return new PatAuthProvider(config.getToken(),
+                discoverPatProjectId(authClientFactory.get().listPersonalAccessTokens()));
+    }
+
+    /**
+     * Picks the single project a Personal Access Token operates on.
+     *
+     * <p>The listing covers the calling token and the tokens derived from it. A derived token
+     * can never reach beyond its parent, so the union of the resolved project sets is exactly
+     * what the calling token can reach.
+     *
+     * @param pats the Personal Access Tokens returned for the calling credential
+     * @return the id of the only accessible project
+     * @throws KeboolaJdbcException if no project is accessible, or if more than one is and the
+     *                              choice is therefore ambiguous
+     */
+    private static long discoverPatProjectId(List<PatInfo> pats) throws KeboolaJdbcException {
+        Map<Long, String> projectNamesById = new LinkedHashMap<>();
+        for (PatInfo pat : pats) {
+            for (PatInfo.ProjectAccess project : pat.getAccessibleProjects()) {
+                projectNamesById.putIfAbsent(project.getId(), project.getName());
+            }
+        }
+
+        if (projectNamesById.isEmpty()) {
+            throw KeboolaJdbcException.authenticationFailed(
+                    "the Personal Access Token does not grant access to any Keboola project. "
+                            + "Grant it access to a project, or connect with a project-scoped "
+                            + "Storage API token instead");
+        }
+
+        if (projectNamesById.size() > 1) {
+            String available = projectNamesById.entrySet().stream()
+                    .map(entry -> entry.getKey() + " (" + entry.getValue() + ")")
+                    .collect(Collectors.joining(", "));
+            throw KeboolaJdbcException.connectionFailed(
+                    "the Personal Access Token can access " + projectNamesById.size()
+                            + " projects, so the target project is ambiguous. Set the '"
+                            + DriverConfig.PROP_PROJECT + "' connection property to one of: "
+                            + available);
+        }
+
+        Map.Entry<Long, String> only = projectNamesById.entrySet().iterator().next();
+        LOG.info("Auto-selected project: id={}, name='{}' "
+                        + "(the only project this Personal Access Token can access)",
+                only.getKey(), only.getValue());
+        return only.getKey();
+    }
+
+    /**
+     * Renders the authentication mode for a log line, with the project id when the credential
+     * is a Personal Access Token. Never contains the credential itself.
+     */
+    private static String describeAuth(AuthProvider authProvider) {
+        if (authProvider instanceof PatAuthProvider) {
+            return authProvider.mode().propertyValue()
+                    + " (project " + ((PatAuthProvider) authProvider).getProjectId() + ")";
+        }
+        return authProvider.mode().propertyValue();
+    }
+
     private TokenInfo verifyToken() throws KeboolaJdbcException {
-        LOG.debug("Verifying Storage API token");
+        LOG.debug("Verifying credential against the Storage API");
         TokenInfo info = storageClient.verifyToken();
-        LOG.debug("Token verified: project='{}', tokenId={}", info.getOwner().getName(), info.getId());
+        LOG.debug("Credential verified: project='{}', tokenId={}", info.getOwner().getName(), info.getId());
         return info;
     }
 
@@ -598,7 +708,7 @@ public class KeboolaConnection implements Connection {
                 if (jobQueueClient == null) {
                     try {
                         String queueUrl = storageClient.discoverServiceUrl("queue");
-                        jobQueueClient = new JobQueueClient(queueUrl, storageClient.getToken());
+                        jobQueueClient = new JobQueueClient(queueUrl, storageClient.getAuthProvider());
                         LOG.info("Job Queue client initialized: {}", queueUrl);
                     } catch (KeboolaJdbcException e) {
                         throw new SQLException("Failed to discover Job Queue service: " + e.getMessage(), e);

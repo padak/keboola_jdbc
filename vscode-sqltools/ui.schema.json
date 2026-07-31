@@ -4,18 +4,22 @@
     "keboolaStack",
     "customConnectionUrl",
     "token",
+    "projectId",
     "branchId",
     "workspaceId"
   ],
   "token": {
     "ui:widget": "password",
-    "ui:help": "Generate a Storage API token from your Keboola project Settings > API Tokens"
+    "ui:help": "Either a Storage API token (project Settings > API Tokens) or a Personal Access Token starting with kbc_pat_ (user Account Settings). The kind is recognised from the token itself."
   },
   "keboolaStack": {
     "ui:help": "Select your Keboola stack. Choose 'Custom URL' for single-tenant or private deployments."
   },
   "customConnectionUrl": {
     "ui:help": "Only needed when 'Custom URL' is selected. e.g., connection.yourcompany.keboola.com"
+  },
+  "projectId": {
+    "ui:help": "Needed only with a Personal Access Token, which is not tied to one project. Leave empty — you will be prompted to select a project when connecting. Ignored for a Storage API token."
   },
   "branchId": {
     "ui:help": "Leave empty — you will be prompted to select a branch when connecting. Or enter a specific Branch ID manually."

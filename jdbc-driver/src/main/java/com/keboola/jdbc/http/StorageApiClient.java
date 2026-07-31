@@ -3,6 +3,7 @@ package com.keboola.jdbc.http;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.keboola.jdbc.auth.AuthProvider;
 import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.model.Branch;
@@ -21,12 +22,13 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
  * HTTP client for the Keboola Storage API (v2).
  *
- * Handles authentication via the X-StorageApi-Token header, JSON deserialization,
+ * Handles authentication via an {@link AuthProvider}, JSON deserialization,
  * and retry logic (up to {@link DriverConfig#MAX_RETRIES} attempts for 5xx/429 responses).
  * 4xx responses other than 429 (e.g. 401, 400) cause an immediate failure without retrying.
  */
@@ -34,22 +36,20 @@ public class StorageApiClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(StorageApiClient.class);
 
-    private static final String HEADER_TOKEN = "X-StorageApi-Token";
-
     private final String       host;
-    private final String       token;
+    private final AuthProvider authProvider;
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
 
     /**
      * Creates a new Storage API client.
      *
-     * @param host  Keboola Connection host, e.g. "connection.keboola.com"
-     * @param token Keboola Storage API token used for all requests
+     * @param host         Keboola Connection host, e.g. "connection.keboola.com"
+     * @param authProvider supplies the authentication headers for every request
      */
-    public StorageApiClient(String host, String token) {
-        this.host  = host;
-        this.token = token;
+    public StorageApiClient(String host, AuthProvider authProvider) {
+        this.host         = host;
+        this.authProvider = authProvider;
 
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(DriverConfig.HTTP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -63,9 +63,9 @@ public class StorageApiClient {
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
-    /** Returns the token used for API authentication (needed by JobQueueClient). */
-    public String getToken() {
-        return token;
+    /** Returns the provider authenticating this client, for reuse by sibling API clients. */
+    public AuthProvider getAuthProvider() {
+        return authProvider;
     }
 
     // --- Public API methods ---
@@ -232,43 +232,7 @@ public class StorageApiClient {
     // --- Internal helpers ---
 
     private String storageUrl(String path) {
-        // Accept either a bare host ("connection.keboola.com") or a full base URL
-        // ("http://localhost:1234"). The latter is used by unit tests against MockWebServer.
-        // Strip any trailing slash on the base URL so paths starting with "/" don't
-        // produce double slashes (e.g. "http://x/" + "/v2/storage" -> "http://x//v2/storage").
-        String base = host;
-        if (base.endsWith("/")) {
-            base = base.substring(0, base.length() - 1);
-        }
-        if (base.startsWith("https://")) {
-            return base + path;
-        }
-        // Plaintext http:// is honored only for loopback (local test servers like
-        // MockWebServer). The Storage API token is attached to every request, so it
-        // must never be sent in cleartext to a remote host: upgrade those to https.
-        if (base.startsWith("http://")) {
-            if (isLoopbackBaseUrl(base)) {
-                return base + path;
-            }
-            return "https://" + base.substring("http://".length()) + path;
-        }
-        return "https://" + base + path;
-    }
-
-    /** True if an "http://" base URL points at a loopback host (localhost / 127.0.0.1 / ::1). */
-    private static boolean isLoopbackBaseUrl(String httpBase) {
-        String hostPort = httpBase.substring("http://".length());
-        int slash = hostPort.indexOf('/');
-        if (slash >= 0) {
-            hostPort = hostPort.substring(0, slash);
-        }
-        int colon = hostPort.lastIndexOf(':');
-        // Keep IPv6 brackets intact; only strip a trailing :port.
-        String hostOnly = (colon >= 0 && hostPort.indexOf(']') < colon) ? hostPort.substring(0, colon) : hostPort;
-        return hostOnly.equals("localhost")
-                || hostOnly.equals("127.0.0.1")
-                || hostOnly.equals("[::1]")
-                || hostOnly.equals("::1");
+        return HostUrls.resolve(host, path);
     }
 
     /**
@@ -279,7 +243,6 @@ public class StorageApiClient {
     private String executeGet(String url) throws KeboolaJdbcException {
         Request request = new Request.Builder()
                 .url(url)
-                .header(HEADER_TOKEN, token)
                 .get()
                 .build();
 
@@ -289,7 +252,7 @@ public class StorageApiClient {
     /**
      * Executes the given request with exponential back-off retry for transient errors.
      *
-     * @param request the HTTP request to execute
+     * @param request the HTTP request to execute, without authentication headers
      * @param urlForLog the URL string used in log and error messages
      * @return response body as a string
      * @throws KeboolaJdbcException on permanent failure or after exhausting retries
@@ -302,7 +265,10 @@ public class StorageApiClient {
             attempts++;
             LOG.debug("HTTP GET {} (attempt {}/{})", urlForLog, attempts, DriverConfig.MAX_RETRIES);
 
-            try (Response response = httpClient.newCall(request).execute()) {
+            // Resolved per attempt so a provider backed by an expiring credential can renew it.
+            Request authenticated = withAuthHeaders(request);
+
+            try (Response response = httpClient.newCall(authenticated).execute()) {
                 int code = response.code();
                 LOG.debug("HTTP {} <- {}", code, urlForLog);
 
@@ -350,6 +316,15 @@ public class StorageApiClient {
                         DriverConfig.POLL_MAX_INTERVAL_MS);
             }
         }
+    }
+
+    /** Returns a copy of the request carrying the currently valid authentication headers. */
+    private Request withAuthHeaders(Request request) throws KeboolaJdbcException {
+        Request.Builder builder = request.newBuilder();
+        for (Map.Entry<String, String> header : authProvider.authHeaders().entrySet()) {
+            builder.header(header.getKey(), header.getValue());
+        }
+        return builder.build();
     }
 
     /**

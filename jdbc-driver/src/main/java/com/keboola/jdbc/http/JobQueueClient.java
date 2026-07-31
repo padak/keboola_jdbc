@@ -2,6 +2,7 @@ package com.keboola.jdbc.http;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.keboola.jdbc.auth.AuthProvider;
 import com.keboola.jdbc.config.DriverConfig;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import okhttp3.OkHttpClient;
@@ -14,32 +15,31 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
  * HTTP client for the Keboola Job Queue API.
- * Auth uses the same X-StorageApi-Token header as Storage API.
+ * Auth uses the same credentials as the Storage API, supplied by an {@link AuthProvider}.
  */
 public class JobQueueClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(JobQueueClient.class);
 
-    private static final String HEADER_TOKEN = "X-StorageApi-Token";
-
     private final String baseUrl;
-    private final String token;
+    private final AuthProvider authProvider;
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
 
     /**
      * Creates a new Job Queue API client.
      *
-     * @param baseUrl base URL of the Job Queue service (e.g. "https://queue.keboola.com")
-     * @param token   Keboola Storage API token
+     * @param baseUrl      base URL of the Job Queue service (e.g. "https://queue.keboola.com")
+     * @param authProvider supplies the authentication headers for every request
      */
-    public JobQueueClient(String baseUrl, String token) {
+    public JobQueueClient(String baseUrl, AuthProvider authProvider) {
         this.baseUrl = baseUrl;
-        this.token = token;
+        this.authProvider = authProvider;
 
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(DriverConfig.HTTP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -64,13 +64,12 @@ public class JobQueueClient {
         String url = baseUrl + "/search/jobs?limit=" + limit + "&sortBy=id&sortOrder=desc";
         LOG.info("Listing jobs from {}", url);
 
-        Request request = new Request.Builder()
-                .url(url)
-                .header(HEADER_TOKEN, token)
-                .get()
-                .build();
+        Request.Builder builder = new Request.Builder().url(url).get();
+        for (Map.Entry<String, String> header : authProvider.authHeaders().entrySet()) {
+            builder.header(header.getKey(), header.getValue());
+        }
 
-        try (Response response = httpClient.newCall(request).execute()) {
+        try (Response response = httpClient.newCall(builder.build()).execute()) {
             int code = response.code();
             if (code != 200) {
                 throw KeboolaJdbcException.connectionFailed(

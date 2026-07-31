@@ -30,7 +30,7 @@ TypeScript extension for Visual Studio Code that integrates with the [SQLTools](
 
 **Features:**
 - Connect to any Keboola stack (AWS US/EU, GCP, Azure, custom)
-- QuickPick selection for branch and workspace on first connect
+- QuickPick selection for project, branch and workspace on first connect
 - Browse buckets, tables, and columns in the sidebar explorer
 - Execute SQL queries with async polling and pagination
 - Virtual `_keboola.*` tables (components, events, jobs, tables, buckets)
@@ -51,6 +51,15 @@ code --install-extension vscode-sqltools/dist/sqltools-keboola-driver-2.1.4.vsix
 ```
 
 ## Prerequisites
+
+Both the JDBC driver and the VSCode extension accept two kinds of credentials.
+
+| Credential | Recognized by | Scope | Extra configuration |
+|---|---|---|---|
+| **Storage API token** | anything without the PAT prefix | a single project | none -- the token carries its project |
+| **Personal Access Token** (PAT) | the `kbc_pat_` prefix | your user account, across every project you can reach | the target project, auto-detected when the PAT reaches exactly one |
+
+The driver picks the method from the credential's prefix, so you normally supply just `token`. Set `auth=token` or `auth=pat` if you want to state it explicitly. See [JDBC connection properties](#jdbc-connection-properties) for the full list.
 
 ### Storage API Token
 
@@ -77,6 +86,67 @@ Both the JDBC driver and VSCode extension require a Keboola Storage API token. T
 - Tokens from a different project than the workspace
 
 > **Tip:** If you get connection errors, first verify your token works by visiting `https://connection.keboola.com/v2/storage/tokens/verify` with the header `X-StorageApi-Token: <your-token>`.
+
+### Personal Access Token
+
+A Personal Access Token (PAT) belongs to your Keboola **user**, not to a single project. One PAT therefore works across every project you can reach, and you pick the project per connection instead of creating a token per project.
+
+**How to create one:** open your user **Settings** in the Keboola UI and create a Personal Access Token. Its value starts with `kbc_pat_`.
+
+**Requirements:**
+- PATs must be enabled on your Keboola stack (the `programmatic-auth` stack feature). When they are not, the endpoint the driver uses does not exist and the driver fails the connection with an explicit message saying Personal Access Tokens are not enabled on the stack -- ask Keboola support to enable it, or use a Storage API token.
+- The project you connect to must be in the token's scope. A project outside it is rejected with HTTP 403.
+- A workspace must already exist in the project, exactly as with a Storage API token.
+
+**Choosing the project:**
+- If the PAT reaches exactly one project, the driver detects it and logs which project it selected.
+- If it reaches several, the connection fails with the list of available `id (name)` pairs and you set the `project` property to one of them.
+
+> **Tip:** to see the projects a PAT can reach, call `https://connection.keboola.com/v1/auth/pat` with the header `Authorization: Bearer <your-pat>`. A `404` from that URL means PATs are not enabled on the stack.
+
+## JDBC connection properties
+
+Every property can be supplied either as a JDBC `Properties` entry (in the client's connection form) or as a URL query parameter. When both carry the same key, the `Properties` entry wins. Prefer the connection form for the credential -- clients commonly store the JDBC URL as plaintext.
+
+| Property | Required | Description |
+|---|---|---|
+| `token` | yes | Storage API token or Personal Access Token |
+| `password` | -- | Accepted as a carrier for `token`, for clients such as Tableau whose JDBC connector has no UI for custom properties. An explicit `token` wins |
+| `auth` | no | `token` or `pat`. Default: inferred from the credential -- the `kbc_pat_` prefix means `pat`, anything else means `token` |
+| `project` | only for a PAT reaching several projects | Numeric Keboola project ID. Auto-detected when the PAT reaches exactly one project. Ignored with a warning when the credential is a Storage API token, which already carries its project |
+| `branch` | no | Branch ID. Default: the project's default branch |
+| `workspace` | no | Workspace ID. Default: the newest workspace in the project |
+| `schema` | no | Default schema (bucket) for unqualified table references |
+
+**Storage API token:**
+
+```
+jdbc:keboola://connection.keboola.com
+    token = <your-storage-api-token>
+```
+
+**Personal Access Token, project auto-detected:**
+
+```
+jdbc:keboola://connection.keboola.com
+    token = kbc_pat_<your-personal-access-token>
+```
+
+**Personal Access Token, explicit project and workspace:**
+
+```
+jdbc:keboola://connection.keboola.com
+    token     = kbc_pat_<your-personal-access-token>
+    project   = 1234
+    workspace = 567890
+```
+
+The same connections as a single URL, for clients that accept nothing else:
+
+```
+jdbc:keboola://connection.keboola.com?token=<your-storage-api-token>
+jdbc:keboola://connection.keboola.com?token=kbc_pat_<your-personal-access-token>&project=1234
+```
 
 ## Repository Structure
 

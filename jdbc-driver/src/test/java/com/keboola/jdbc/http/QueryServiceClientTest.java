@@ -1,5 +1,7 @@
 package com.keboola.jdbc.http;
 
+import com.keboola.jdbc.auth.PatAuthProvider;
+import com.keboola.jdbc.auth.StorageTokenAuthProvider;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.model.JobStatus;
 import com.keboola.jdbc.http.model.QueryJob;
@@ -36,7 +38,8 @@ class QueryServiceClientTest {
         server = new MockWebServer();
         server.start();
         // Constructor strips trailing slash itself; pass the URL as-is.
-        client = new QueryServiceClient(server.url("").toString(), "test-token");
+        client = new QueryServiceClient(server.url("").toString(),
+                new StorageTokenAuthProvider("test-token"));
     }
 
     @AfterEach
@@ -318,6 +321,67 @@ class QueryServiceClientTest {
     }
 
     // ---------------------------------------------------------------------
+    // Auth headers
+    // ---------------------------------------------------------------------
+
+    @Test
+    void storageTokenProvider_sendsStorageApiTokenHeader() throws Exception {
+        server.enqueue(jsonResponse(200, jobResponse("j1", "completed")));
+
+        client.getJobStatus("j1");
+
+        RecordedRequest req = server.takeRequest();
+        assertEquals("test-token", req.getHeader("X-StorageApi-Token"));
+    }
+
+    @Test
+    void patProvider_sendsBearerAndProjectHeader_withoutStorageTokenHeader() throws Exception {
+        QueryServiceClient patClient = new QueryServiceClient(
+                server.url("").toString(), new PatAuthProvider("kbc_pat_secret", 4321L));
+        server.enqueue(jsonResponse(200, jobResponse("j1", "completed")));
+
+        patClient.getJobStatus("j1");
+
+        RecordedRequest req = server.takeRequest();
+        assertEquals("Bearer kbc_pat_secret", req.getHeader("Authorization"));
+        assertEquals("4321", req.getHeader("X-KBC-ProjectId"));
+        assertNull(req.getHeader("X-StorageApi-Token"));
+    }
+
+    @Test
+    void patProvider_onPost_sendsBearerAndProjectHeader() throws Exception {
+        QueryServiceClient patClient = new QueryServiceClient(
+                server.url("").toString(), new PatAuthProvider("kbc_pat_secret", 99L));
+        server.enqueue(jsonResponse(200, Collections.singletonMap("queryJobId", "job-1")));
+
+        patClient.submitJob(1L, 2L, Collections.singletonList("SELECT 1"));
+
+        RecordedRequest req = server.takeRequest();
+        assertEquals("POST", req.getMethod());
+        assertEquals("Bearer kbc_pat_secret", req.getHeader("Authorization"));
+        assertEquals("99", req.getHeader("X-KBC-ProjectId"));
+        assertNull(req.getHeader("X-StorageApi-Token"));
+    }
+
+    @Test
+    void authHeaders_areReResolvedOnEveryRetryAttempt() throws Exception {
+        RotatingAuthProvider rotating = new RotatingAuthProvider();
+        QueryServiceClient rotatingClient = new QueryServiceClient(server.url("").toString(), rotating);
+        server.enqueue(jsonResponse(500, Collections.singletonMap("error", "transient")));
+        server.enqueue(jsonResponse(200, jobResponse("j1", "completed")));
+
+        rotatingClient.getJobStatus("j1");
+
+        assertEquals(2, server.getRequestCount());
+        assertEquals(RotatingAuthProvider.tokenForCall(1),
+                server.takeRequest().getHeader("X-StorageApi-Token"));
+        assertEquals(RotatingAuthProvider.tokenForCall(2),
+                server.takeRequest().getHeader("X-StorageApi-Token"),
+                "The retry must carry the freshly resolved credential");
+        assertEquals(2, rotating.callCount());
+    }
+
+    // ---------------------------------------------------------------------
     // Constructor
     // ---------------------------------------------------------------------
 
@@ -326,7 +390,7 @@ class QueryServiceClientTest {
         // The constructor normalizes trailing slash. Verify by issuing a request that
         // would otherwise build a URL containing a double slash.
         QueryServiceClient withSlash = new QueryServiceClient(
-                server.url("").toString(), "tok"); // already ends with /
+                server.url("").toString(), new StorageTokenAuthProvider("tok")); // already ends with /
         server.enqueue(jsonResponse(200, jobResponse("j1", "completed")));
 
         withSlash.getJobStatus("j1");

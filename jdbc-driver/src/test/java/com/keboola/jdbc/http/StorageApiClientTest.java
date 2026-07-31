@@ -1,6 +1,8 @@
 package com.keboola.jdbc.http;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.keboola.jdbc.auth.PatAuthProvider;
+import com.keboola.jdbc.auth.StorageTokenAuthProvider;
 import com.keboola.jdbc.exception.KeboolaJdbcException;
 import com.keboola.jdbc.http.model.Branch;
 import com.keboola.jdbc.http.model.Bucket;
@@ -22,12 +24,16 @@ import static com.keboola.jdbc.http.MockServerFixture.jsonResponse;
 import static com.keboola.jdbc.http.MockServerFixture.rawResponse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StorageApiClientTest {
 
     private MockWebServer server;
+    private String baseUrl;
+    private StorageTokenAuthProvider tokenProvider;
     private StorageApiClient client;
 
     @BeforeEach
@@ -35,9 +41,12 @@ class StorageApiClientTest {
         server = new MockWebServer();
         server.start();
         // Pass the MockWebServer base URL as the "host" — StorageApiClient's
-        // storageUrl() accepts either a bare host or a full URL prefix.
-        String baseUrl = server.url("").toString().replaceAll("/$", "");
-        client = new StorageApiClient(baseUrl, "test-token");
+        // storageUrl() accepts either a bare host or a full URL prefix. Spelled as the
+        // loopback literal because plaintext http is only honored for loopback hosts and
+        // MockWebServer.url() reports whatever name 127.0.0.1 reverse-resolves to.
+        baseUrl = "http://127.0.0.1:" + server.getPort();
+        tokenProvider = new StorageTokenAuthProvider("test-token");
+        client = new StorageApiClient(baseUrl, tokenProvider);
     }
 
     @AfterEach
@@ -355,13 +364,45 @@ class StorageApiClientTest {
         assertEquals("test-token", req.getHeader("X-StorageApi-Token"));
     }
 
+    @Test
+    void patProvider_sendsBearerAndProjectHeader_withoutStorageTokenHeader() throws Exception {
+        StorageApiClient patClient = new StorageApiClient(
+                baseUrl, new PatAuthProvider("kbc_pat_secret", 4321L));
+        server.enqueue(jsonResponse(200, Collections.emptyList()));
+
+        patClient.listBuckets();
+
+        RecordedRequest req = server.takeRequest();
+        assertEquals("Bearer kbc_pat_secret", req.getHeader("Authorization"));
+        assertEquals("4321", req.getHeader("X-KBC-ProjectId"));
+        assertNull(req.getHeader("X-StorageApi-Token"));
+    }
+
+    @Test
+    void authHeaders_areReResolvedOnEveryRetryAttempt() throws Exception {
+        RotatingAuthProvider rotating = new RotatingAuthProvider();
+        StorageApiClient rotatingClient = new StorageApiClient(baseUrl, rotating);
+        server.enqueue(jsonResponse(500, Collections.singletonMap("error", "transient")));
+        server.enqueue(jsonResponse(200, Collections.emptyList()));
+
+        rotatingClient.listBuckets();
+
+        assertEquals(2, server.getRequestCount());
+        assertEquals(RotatingAuthProvider.tokenForCall(1),
+                server.takeRequest().getHeader("X-StorageApi-Token"));
+        assertEquals(RotatingAuthProvider.tokenForCall(2),
+                server.takeRequest().getHeader("X-StorageApi-Token"),
+                "The retry must carry the freshly resolved credential");
+        assertEquals(2, rotating.callCount());
+    }
+
     // ---------------------------------------------------------------------
     // Misc
     // ---------------------------------------------------------------------
 
     @Test
-    void getToken_returnsConstructorValue() {
-        assertEquals("test-token", client.getToken());
+    void getAuthProvider_returnsProviderPassedToConstructor() {
+        assertSame(tokenProvider, client.getAuthProvider());
     }
 
     @Test

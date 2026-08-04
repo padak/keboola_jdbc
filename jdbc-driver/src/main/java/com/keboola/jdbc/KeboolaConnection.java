@@ -162,7 +162,10 @@ public class KeboolaConnection implements Connection {
     private TokenInfo verifyToken() throws KeboolaJdbcException {
         LOG.debug("Verifying Storage API token");
         TokenInfo info = storageClient.verifyToken();
-        LOG.debug("Token verified: project='{}', tokenId={}", info.getOwner().getName(), info.getId());
+        // owner is optional in the verify response — never let a log line break connect().
+        // buildQueryTag() tolerates a null owner too; keep the two consistent.
+        LOG.debug("Token verified: project='{}', tokenId={}",
+                info.getOwner() != null ? info.getOwner().getName() : "<unknown>", info.getId());
         return info;
     }
 

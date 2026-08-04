@@ -27,6 +27,13 @@ public final class DriverConfig {
     public static final int    MAJOR_VERSION  = 2;
     public static final int    MINOR_VERSION  = 1;
 
+    /**
+     * Service name written into the Snowflake QUERY_TAG (`service` / `keboola_service` keys) so driver
+     * traffic is identifiable and bucketed by Keboola telemetry alongside other services (Query Service
+     * uses "query-service", Storage API "sapi"). See the platform QUERY_TAG convention.
+     */
+    public static final String QUERY_TAG_SERVICE = "jdbc-driver";
+
     private static String loadVersion() {
         try (InputStream in = DriverConfig.class.getResourceAsStream("/version.properties")) {
             if (in != null) {
